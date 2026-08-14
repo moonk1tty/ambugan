@@ -1,0 +1,6 @@
+{
+  "name": "SplitWise Telegram Mini App & Script Hub",
+  "description": "Shared expense tracking system for Telegram groups featuring a Telegram Mini App frontend, Gemini AI receipt scanner, Google Apps Script backend (Code.gs), and real-time balance settlement.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
