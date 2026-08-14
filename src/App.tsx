@@ -17,14 +17,33 @@ const DEFAULT_SETTLEMENTS: Settlement[] = [];
 function getChatId(): string {
   const tg = (window as any).Telegram?.WebApp;
   
-  // 1. Direct initDataUnsafe chat object (present when launched from attachment/direct group context)
+  // Helper to sanitize chatId strings
+  const sanitize = (val: string | null | undefined): string => {
+    if (!val) return '';
+    let clean = val.trim();
+    if (clean.includes('startapp=')) clean = clean.split('startapp=')[1] || clean;
+    if (clean.startsWith('c_')) clean = clean.substring(2);
+    if (clean.startsWith('g_')) clean = clean.substring(2);
+    if (/^100\d{8,}$/.test(clean)) {
+      clean = '-' + clean;
+    }
+    return clean;
+  };
+
+  // 1. Direct initDataUnsafe chat object
   if (tg?.initDataUnsafe?.chat?.id) {
     return String(tg.initDataUnsafe.chat.id);
   }
 
   // 2. Query parameters in window.location.search
   const urlParams = new URLSearchParams(window.location.search);
-  const paramChatId = urlParams.get('startapp') || urlParams.get('chat_id') || urlParams.get('chatId') || urlParams.get('start_param') || urlParams.get('tgWebAppStartParam');
+  const paramChatId = sanitize(
+    urlParams.get('startapp') || 
+    urlParams.get('chat_id') || 
+    urlParams.get('chatId') || 
+    urlParams.get('start_param') || 
+    urlParams.get('tgWebAppStartParam')
+  );
   if (paramChatId) return paramChatId;
 
   // 3. Hash parameters in window.location.hash
@@ -32,13 +51,19 @@ function getChatId(): string {
     try {
       const hashClean = window.location.hash.replace(/^#/, '');
       const hashParams = new URLSearchParams(hashClean);
-      const hashChatId = hashParams.get('startapp') || hashParams.get('chat_id') || hashParams.get('chatId') || hashParams.get('start_param') || hashParams.get('tgWebAppStartParam');
+      const hashChatId = sanitize(
+        hashParams.get('startapp') || 
+        hashParams.get('chat_id') || 
+        hashParams.get('chatId') || 
+        hashParams.get('start_param') || 
+        hashParams.get('tgWebAppStartParam')
+      );
       if (hashChatId) return hashChatId;
 
       const tgWebAppData = hashParams.get('tgWebAppData');
       if (tgWebAppData) {
         const appDataParams = new URLSearchParams(decodeURIComponent(tgWebAppData));
-        const appDataStartParam = appDataParams.get('start_param');
+        const appDataStartParam = sanitize(appDataParams.get('start_param') || appDataParams.get('startapp'));
         if (appDataStartParam) return appDataStartParam;
       }
     } catch (e) {
@@ -48,23 +73,12 @@ function getChatId(): string {
 
   // 4. Check Telegram start_param in initDataUnsafe
   if (tg?.initDataUnsafe?.start_param) {
-    return String(tg.initDataUnsafe.start_param);
+    const startParam = sanitize(tg.initDataUnsafe.start_param);
+    if (startParam) return startParam;
   }
 
-  // 5. Fallback to user ID - this ONLY correctly identifies "the chat" when the Mini App
-  // is opened from a private 1-on-1 chat with the bot. If the app is opened from a group
-  // via the bot's default menu button / attachment icon (i.e. NOT via the inline "Open App"
-  // button the bot sends, which encodes the real group chat id as startapp=...), Telegram
-  // does not expose the group's chat id at all - only the launching user's own id. Since
-  // that's the same physical account every time, every group ends up resolving to the same
-  // "chat" as whatever was used during solo/private testing. There's no way to recover the
-  // real group id in that scenario, so we deliberately do NOT fall back to the user id when
-  // we're inside a group/supergroup - it's better to show "no chat detected" than to silently
-  // merge data into the wrong group.
-  const chatType = tg?.initDataUnsafe?.chat_type; // 'group' | 'supergroup' | 'channel' | 'sender' | 'private'
-  const isGroupContext = chatType === 'group' || chatType === 'supergroup';
-
-  if (!isGroupContext && tg?.initDataUnsafe?.user?.id) {
+  // 5. Fallback to user ID for private 1-on-1 chats
+  if (tg?.initDataUnsafe?.user?.id) {
     return String(tg.initDataUnsafe.user.id);
   }
 
@@ -72,21 +86,36 @@ function getChatId(): string {
 }
 
 export default function App() {
-  const chatId = getChatId();
+  const [chatId, setChatId] = useState<string>(() => getChatId());
 
-  const [activeUser, setActiveUser] = useState<string>(() => {
-    const saved = localStorage.getItem(`${STORAGE_KEYS.ACTIVE_USER}_${chatId}`);
-    if (saved) return saved;
-    return '';
-  });
-
-  const [registeredUsers, setRegisteredUsers] = useState<RegisteredUser[]>(() => {
-    const saved = localStorage.getItem(`${STORAGE_KEYS.REGISTERED_USERS}_${chatId}`);
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { /* fallback */ }
+  // Detect and update chatId dynamically when Telegram SDK initializes
+  useEffect(() => {
+    const tg = (window as any).Telegram?.WebApp;
+    if (tg) {
+      try { tg.ready(); } catch (e) {}
     }
-    return [];
-  });
+
+    const checkAndSetChatId = () => {
+      const currentId = getChatId();
+      if (currentId && currentId !== chatId) {
+        setChatId(currentId);
+      }
+    };
+
+    checkAndSetChatId();
+    const interval = setInterval(checkAndSetChatId, 250);
+    const timeout = setTimeout(() => clearInterval(interval), 3000);
+
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
+  }, [chatId]);
+
+  const [activeUser, setActiveUser] = useState<string>('');
+  const [registeredUsers, setRegisteredUsers] = useState<RegisteredUser[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [settlements, setSettlements] = useState<Settlement[]>([]);
 
   const [gasUrl, setGasUrl] = useState<string>(() => {
     return localStorage.getItem(STORAGE_KEYS.GAS_URL) || (import.meta.env.VITE_GAS_URL as string) || '';
@@ -94,31 +123,17 @@ export default function App() {
 
   const [isOnlineGas, setIsOnlineGas] = useState<boolean>(false);
 
-  const [expenses, setExpenses] = useState<Expense[]>(() => {
-    const saved = localStorage.getItem(`${STORAGE_KEYS.EXPENSES}_${chatId}`);
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { /* fallback */ }
-    }
-    return DEFAULT_EXPENSES;
-  });
-
-  const [settlements, setSettlements] = useState<Settlement[]>(() => {
-    const saved = localStorage.getItem(`${STORAGE_KEYS.SETTLEMENTS}_${chatId}`);
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { /* fallback */ }
-    }
-    return DEFAULT_SETTLEMENTS;
-  });
-
   // Save to localStorage scoped by chatId when state changes
   useEffect(() => {
-    if (activeUser) {
+    if (activeUser && chatId) {
       localStorage.setItem(`${STORAGE_KEYS.ACTIVE_USER}_${chatId}`, activeUser);
     }
   }, [activeUser, chatId]);
 
   useEffect(() => {
-    localStorage.setItem(`${STORAGE_KEYS.REGISTERED_USERS}_${chatId}`, JSON.stringify(registeredUsers));
+    if (chatId) {
+      localStorage.setItem(`${STORAGE_KEYS.REGISTERED_USERS}_${chatId}`, JSON.stringify(registeredUsers));
+    }
   }, [registeredUsers, chatId]);
 
   useEffect(() => {
@@ -126,11 +141,15 @@ export default function App() {
   }, [gasUrl]);
 
   useEffect(() => {
-    localStorage.setItem(`${STORAGE_KEYS.EXPENSES}_${chatId}`, JSON.stringify(expenses));
+    if (chatId) {
+      localStorage.setItem(`${STORAGE_KEYS.EXPENSES}_${chatId}`, JSON.stringify(expenses));
+    }
   }, [expenses, chatId]);
 
   useEffect(() => {
-    localStorage.setItem(`${STORAGE_KEYS.SETTLEMENTS}_${chatId}`, JSON.stringify(settlements));
+    if (chatId) {
+      localStorage.setItem(`${STORAGE_KEYS.SETTLEMENTS}_${chatId}`, JSON.stringify(settlements));
+    }
   }, [settlements, chatId]);
 
   // Check Telegram WebApp user context on load or fall back to first registered user
@@ -158,32 +177,32 @@ export default function App() {
   }, [registeredUsers]);
 
   // Fetch data from Google Apps Script endpoint if configured
-  const fetchGasData = useCallback(async (url: string) => {
+  const fetchGasData = useCallback(async (url: string, targetChatId?: string) => {
     if (!url || !url.startsWith('http')) {
       setIsOnlineGas(false);
       return;
     }
 
     try {
-      const chatId = getChatId();
+      const currentChatId = targetChatId || getChatId();
       const tg = (window as any).Telegram?.WebApp;
       const tgUser = tg?.initDataUnsafe?.user;
 
       let result: any;
-      if (tgUser && chatId) {
+      if (tgUser && currentChatId) {
         const response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
           body: JSON.stringify({
             action: 'get_data',
-            chatId: chatId,
+            chatId: currentChatId,
             user: tgUser
           })
         });
         result = await response.json();
       } else {
-        const queryUrl = chatId 
-          ? `${url}?action=get_data&chatId=${encodeURIComponent(chatId)}` 
+        const queryUrl = currentChatId 
+          ? `${url}?action=get_data&chatId=${encodeURIComponent(currentChatId)}` 
           : `${url}?action=get_data`;
         const response = await fetch(queryUrl);
         result = await response.json();
@@ -193,9 +212,13 @@ export default function App() {
         setIsOnlineGas(true);
         if (Array.isArray(result.data.expenses)) {
           setExpenses(result.data.expenses);
+        } else {
+          setExpenses([]);
         }
         if (Array.isArray(result.data.settlements)) {
           setSettlements(result.data.settlements);
+        } else {
+          setSettlements([]);
         }
         if (Array.isArray(result.data.users)) {
           setRegisteredUsers(result.data.users);
@@ -209,14 +232,53 @@ export default function App() {
     }
   }, []);
 
-  // Poll / Sync from GAS on mount or when gasUrl changes
+  // Sync state from local cache and trigger fresh fetch whenever chatId or gasUrl updates
   useEffect(() => {
-    if (gasUrl) {
-      fetchGasData(gasUrl);
+    if (!chatId) return;
+
+    // Load local storage for this specific chatId
+    const keyExpenses = `${STORAGE_KEYS.EXPENSES}_${chatId}`;
+    const savedExp = localStorage.getItem(keyExpenses);
+    if (savedExp) {
+      try { setExpenses(JSON.parse(savedExp)); } catch (e) { setExpenses([]); }
     } else {
-      setIsOnlineGas(false);
+      setExpenses([]);
     }
-  }, [gasUrl, fetchGasData]);
+
+    const keySettlements = `${STORAGE_KEYS.SETTLEMENTS}_${chatId}`;
+    const savedSet = localStorage.getItem(keySettlements);
+    if (savedSet) {
+      try { setSettlements(JSON.parse(savedSet)); } catch (e) { setSettlements([]); }
+    } else {
+      setSettlements([]);
+    }
+
+    const keyUsers = `${STORAGE_KEYS.REGISTERED_USERS}_${chatId}`;
+    const savedUsers = localStorage.getItem(keyUsers);
+    if (savedUsers) {
+      try { setRegisteredUsers(JSON.parse(savedUsers)); } catch (e) { setRegisteredUsers([]); }
+    } else {
+      setRegisteredUsers([]);
+    }
+
+    const keyUser = `${STORAGE_KEYS.ACTIVE_USER}_${chatId}`;
+    const savedUser = localStorage.getItem(keyUser);
+    if (savedUser) {
+      setActiveUser(savedUser);
+    } else {
+      const tg = (window as any).Telegram?.WebApp;
+      if (tg?.initDataUnsafe?.user) {
+        const tgUser = tg.initDataUnsafe.user;
+        const name = tgUser.first_name || tgUser.username || `User ${tgUser.id}`;
+        setActiveUser(name);
+      }
+    }
+
+    // Fetch fresh data from Google Apps Script endpoint for this chatId
+    if (gasUrl) {
+      fetchGasData(gasUrl, chatId);
+    }
+  }, [chatId, gasUrl, fetchGasData]);
 
   const handleAddExpense = async (newExp: Omit<Expense, 'id' | 'timestamp'>) => {
     const created: Expense = {
