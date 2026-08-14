@@ -142,30 +142,38 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         userNetMap[payer] += amt;
 
         if (e.splitMode === '50/50 Equal') {
-          const splitTarget = availableUsers.find(u => u !== payer) || availableUsers[1] || 'Sam';
+          const splitTarget = availableUsers.find(u => u !== payer) || availableUsers[1];
           userNetMap[payer] -= amt / 2;
-          if (userNetMap[splitTarget] === undefined) userNetMap[splitTarget] = 0;
-          userNetMap[splitTarget] -= amt / 2;
+          if (splitTarget) {
+            if (userNetMap[splitTarget] === undefined) userNetMap[splitTarget] = 0;
+            userNetMap[splitTarget] -= amt / 2;
+          }
         } else if (e.splitMode === 'Exact Amounts') {
           const userA = payer;
-          const userB = availableUsers.find(u => u !== payer) || availableUsers[1] || 'Sam';
+          const userB = availableUsers.find(u => u !== payer) || availableUsers[1];
           const shareA = Number(e.userAShare) || (amt / 2);
           const shareB = Number(e.userBShare) || (amt / 2);
           userNetMap[userA] -= shareA;
-          if (userNetMap[userB] === undefined) userNetMap[userB] = 0;
-          userNetMap[userB] -= shareB;
+          if (userB) {
+            if (userNetMap[userB] === undefined) userNetMap[userB] = 0;
+            userNetMap[userB] -= shareB;
+          }
         } else if (e.splitMode === 'Percentages') {
           const userA = payer;
-          const userB = availableUsers.find(u => u !== payer) || availableUsers[1] || 'Sam';
+          const userB = availableUsers.find(u => u !== payer) || availableUsers[1];
           const pA = (Number(e.userAPercent) || 50) / 100;
           const pB = (Number(e.userBPercent) || 50) / 100;
           userNetMap[userA] -= amt * pA;
-          if (userNetMap[userB] === undefined) userNetMap[userB] = 0;
-          userNetMap[userB] -= amt * pB;
+          if (userB) {
+            if (userNetMap[userB] === undefined) userNetMap[userB] = 0;
+            userNetMap[userB] -= amt * pB;
+          }
         } else if (e.splitMode === 'Single Payer (100% owed)') {
-          const userB = availableUsers.find(u => u !== payer) || availableUsers[1] || 'Sam';
-          if (userNetMap[userB] === undefined) userNetMap[userB] = 0;
-          userNetMap[userB] -= amt;
+          const userB = availableUsers.find(u => u !== payer) || availableUsers[1];
+          if (userB) {
+            if (userNetMap[userB] === undefined) userNetMap[userB] = 0;
+            userNetMap[userB] -= amt;
+          }
         }
       });
 
