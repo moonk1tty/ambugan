@@ -23,6 +23,7 @@ interface MiniAppViewProps {
   gasUrl: string;
   setGasUrl: (url: string) => void;
   isOnlineGas: boolean;
+  chatId?: string;
 }
 
 const SUPPORTED_CURRENCIES = [
@@ -45,9 +46,10 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   onSettleUp,
   gasUrl,
   setGasUrl,
-  isOnlineGas
+  isOnlineGas,
+  chatId = ''
 }) => {
-  const [activeTab, setActiveTab] = useState<'new' | 'balances' | 'ledger' | 'settings'>('new');
+  const [activeTab, setActiveTab] = useState<'new' | 'balances' | 'ledger'>('new');
   
   // Single Expense Form State
   const [description, setDescription] = useState('');
@@ -669,76 +671,6 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
           </div>
         )}
 
-        {/* TAB 4: CONFIG / SETTINGS */}
-        {activeTab === 'settings' && (
-          <div className="bg-white/70 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-sm space-y-3.5 text-xs">
-            <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold border-b border-black/5 pb-2">
-              System Configuration
-            </div>
-
-            {/* Active User Selection */}
-            <div>
-              <label className="block text-[11px] font-semibold text-[#1B1B19]/80 mb-1">Active User Identity</label>
-              <select
-                value={activeUser}
-                onChange={e => setActiveUser(e.target.value)}
-                className="w-full bg-white/80 border border-black/5 rounded-xl px-3 py-2 text-[#1B1B19] font-medium text-xs focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20"
-              >
-                {availableUsers.map(u => (
-                  <option key={u} value={u}>{u}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Detected Members from Google Sheets Users tab */}
-            {registeredUsers && registeredUsers.length > 0 && (
-              <div className="bg-white/50 p-3 rounded-xl border border-black/5 space-y-1.5">
-                <div className="text-[11px] font-semibold text-[#1B1B19] flex justify-between items-center">
-                  <span>Group Members Sync ({registeredUsers.length})</span>
-                  <span className="text-[9px] font-mono text-[#4A6CF7]">Live</span>
-                </div>
-                <div className="space-y-1 max-h-32 overflow-y-auto">
-                  {registeredUsers.map((u, i) => (
-                    <div key={i} className="flex justify-between items-center text-[10px] font-mono text-[#1B1B19]/70 bg-white/70 p-1.5 rounded-lg border border-black/5">
-                      <span className="font-medium text-[#1B1B19]">{u.firstName} {u.username ? `(${u.username})` : ''}</span>
-                      <span className="text-[9px] text-[#1B1B19]/40">ID: {u.userId}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div>
-              <label className="block text-[11px] font-medium text-[#1B1B19]/70 mb-1">Google Apps Script Web App URL</label>
-              <input
-                type="text"
-                placeholder="https://script.google.com/macros/s/.../exec"
-                value={gasUrl}
-                onChange={e => setGasUrl(e.target.value)}
-                className="w-full bg-white/80 border border-black/5 rounded-xl px-3 py-2 text-[#1B1B19] font-mono text-[11px] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20"
-              />
-            </div>
-
-            <div className="bg-white/50 p-3 rounded-xl border border-black/5 space-y-1.5">
-              <div className="flex items-center justify-between">
-                <span className="text-[#1B1B19] font-semibold">Backend Status</span>
-                {isOnlineGas ? (
-                  <span className="text-[#4A6CF7] font-semibold flex items-center gap-1 font-mono text-[11px]">
-                    <CheckCircle2 className="w-3.5 h-3.5" /> GAS Live Sync
-                  </span>
-                ) : (
-                  <span className="text-amber-700 font-semibold flex items-center gap-1 font-mono text-[11px]">
-                    <AlertCircle className="w-3.5 h-3.5" /> Local Interactive Simulator
-                  </span>
-                )}
-              </div>
-              <p className="text-[#1B1B19]/60 text-[11px]">
-                In local simulator mode, all data persists in interactive state. Paste your GAS Web App URL above to sync with Google Sheets.
-              </p>
-            </div>
-          </div>
-        )}
-
       </div>
 
       {/* Settle Up Modal */}
@@ -790,7 +722,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       )}
 
       {/* Monospace Sticky Footer Navigation */}
-      <footer className="sticky bottom-0 bg-[#F8F7F4]/95 backdrop-blur-md border-t border-black/10 py-3 mt-auto z-40 grid grid-cols-4 gap-1 text-center font-mono text-[9px] uppercase tracking-wider">
+      <footer className="sticky bottom-0 bg-[#F8F7F4]/95 backdrop-blur-md border-t border-black/10 py-3 mt-auto z-40 grid grid-cols-3 gap-1 text-center font-mono text-[9px] uppercase tracking-wider">
         <button
           onClick={() => setActiveTab('new')}
           className={`py-2 rounded-xl transition flex flex-col items-center justify-center ${
@@ -825,18 +757,6 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         >
           <span className="opacity-60 text-[8px]">[03]</span>
           <span className="font-bold">LEDGER</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('settings')}
-          className={`py-2 rounded-xl transition flex flex-col items-center justify-center ${
-            activeTab === 'settings'
-              ? 'bg-[#1B1B19] text-white font-bold shadow-sm'
-              : 'text-[#1B1B19]/60 hover:text-[#1B1B19] hover:bg-black/5'
-          }`}
-        >
-          <span className="opacity-60 text-[8px]">[04]</span>
-          <span className="font-bold">CONFIG</span>
         </button>
       </footer>
 

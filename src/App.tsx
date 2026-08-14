@@ -20,22 +20,40 @@ function getChatId(): string {
   // Helper to sanitize chatId strings
   const sanitize = (val: string | null | undefined): string => {
     if (!val) return '';
-    let clean = val.trim();
+    let clean = String(val).trim();
     if (clean.includes('startapp=')) clean = clean.split('startapp=')[1] || clean;
+    if (clean.includes('chat_id=')) clean = clean.split('chat_id=')[1] || clean;
+    if (clean.includes('chatId=')) clean = clean.split('chatId=')[1] || clean;
+
+    const isExplicitGroup = clean.startsWith('g_') || clean.startsWith('c_') || clean.startsWith('group_');
+
     if (clean.startsWith('c_')) clean = clean.substring(2);
     if (clean.startsWith('g_')) clean = clean.substring(2);
+    if (clean.startsWith('group_')) clean = clean.substring(6);
+
+    clean = clean.replace(/[^0-9-]/g, '');
+    if (!clean) return '';
+
     if (/^100\d{8,}$/.test(clean)) {
+      clean = '-' + clean;
+    } else if (isExplicitGroup && !clean.startsWith('-')) {
       clean = '-' + clean;
     }
     return clean;
   };
 
-  // 1. Direct initDataUnsafe chat object
+  // 1. Direct initDataUnsafe chat object (from Telegram group chat button or menu)
   if (tg?.initDataUnsafe?.chat?.id) {
     return String(tg.initDataUnsafe.chat.id);
   }
 
-  // 2. Query parameters in window.location.search
+  // 2. Telegram start_param in initDataUnsafe (from Direct Mini App links t.me/bot/app?startapp=...)
+  if (tg?.initDataUnsafe?.start_param) {
+    const startParam = sanitize(tg.initDataUnsafe.start_param);
+    if (startParam) return startParam;
+  }
+
+  // 3. Query parameters in window.location.search
   const urlParams = new URLSearchParams(window.location.search);
   const paramChatId = sanitize(
     urlParams.get('startapp') || 
@@ -46,7 +64,7 @@ function getChatId(): string {
   );
   if (paramChatId) return paramChatId;
 
-  // 3. Hash parameters in window.location.hash
+  // 4. Hash parameters in window.location.hash
   if (window.location.hash) {
     try {
       const hashClean = window.location.hash.replace(/^#/, '');
@@ -69,12 +87,6 @@ function getChatId(): string {
     } catch (e) {
       console.error('Error parsing hash params', e);
     }
-  }
-
-  // 4. Check Telegram start_param in initDataUnsafe
-  if (tg?.initDataUnsafe?.start_param) {
-    const startParam = sanitize(tg.initDataUnsafe.start_param);
-    if (startParam) return startParam;
   }
 
   // 5. Fallback to user ID for private 1-on-1 chats
@@ -381,6 +393,7 @@ export default function App() {
           gasUrl={gasUrl}
           setGasUrl={setGasUrl}
           isOnlineGas={isOnlineGas}
+          chatId={chatId}
         />
       </main>
     </div>
