@@ -10,57 +10,15 @@ const STORAGE_KEYS = {
   REGISTERED_USERS: 'splitsquad_registered_users'
 };
 
-const DEFAULT_EXPENSES: Expense[] = [
-  {
-    id: 'EXP-101',
-    timestamp: new Date(Date.now() - 86400000 * 2).toISOString(),
-    description: 'Groceries at Supermarket',
-    amount: 1250.00,
-    currency: '₱',
-    paidBy: 'Alex',
-    splitMode: '50/50 Equal',
-    createdBy: 'Alex',
-    category: 'Food'
-  },
-  {
-    id: 'EXP-102',
-    timestamp: new Date(Date.now() - 86400000).toISOString(),
-    description: 'Dinner at Italian Restaurant',
-    amount: 850.00,
-    currency: '₱',
-    paidBy: 'Sam',
-    splitMode: '50/50 Equal',
-    createdBy: 'Sam',
-    category: 'Food'
-  },
-  {
-    id: 'EXP-103',
-    timestamp: new Date().toISOString(),
-    description: 'Electricity & Internet Bill',
-    amount: 2400.00,
-    currency: '₱',
-    paidBy: 'Alex',
-    splitMode: '50/50 Equal',
-    createdBy: 'Alex',
-    category: 'Others'
-  }
-];
+const DEFAULT_EXPENSES: Expense[] = [];
 
-const DEFAULT_SETTLEMENTS: Settlement[] = [
-  {
-    id: 'SET-201',
-    timestamp: new Date(Date.now() - 86400000 * 5).toISOString(),
-    payer: 'Sam',
-    receiver: 'Alex',
-    amount: 500.00,
-    currency: '₱',
-    method: 'Settled Up'
-  }
-];
+const DEFAULT_SETTLEMENTS: Settlement[] = [];
 
 export default function App() {
   const [activeUser, setActiveUser] = useState<string>(() => {
-    return localStorage.getItem(STORAGE_KEYS.ACTIVE_USER) || 'Alex';
+    const saved = localStorage.getItem(STORAGE_KEYS.ACTIVE_USER);
+    if (saved && saved !== 'Alex' && saved !== 'Sam') return saved;
+    return '';
   });
 
   const [registeredUsers, setRegisteredUsers] = useState<RegisteredUser[]>(() => {
@@ -114,7 +72,7 @@ export default function App() {
     localStorage.setItem(STORAGE_KEYS.SETTLEMENTS, JSON.stringify(settlements));
   }, [settlements]);
 
-  // Check Telegram WebApp user context on load
+  // Check Telegram WebApp user context on load or fall back to first registered user
   useEffect(() => {
     const tg = (window as any).Telegram?.WebApp;
     if (tg?.initDataUnsafe?.user) {
@@ -122,9 +80,21 @@ export default function App() {
       const tgName = tgUser.first_name || tgUser.username || `User ${tgUser.id}`;
       if (tgName) {
         setActiveUser(tgName);
+        return;
       }
     }
-  }, []);
+    if ((!activeUser || activeUser === 'Alex' || activeUser === 'Sam') && registeredUsers.length > 0) {
+      const firstUser = registeredUsers.find(u => {
+        const uName = (u.username || '').toLowerCase();
+        const fName = (u.firstName || '').toLowerCase();
+        return !uName.includes('bot') && !fName.includes('bot');
+      });
+      if (firstUser) {
+        const name = firstUser.firstName || firstUser.username || `User ${firstUser.userId}`;
+        if (name) setActiveUser(name);
+      }
+    }
+  }, [registeredUsers]);
 
   // Fetch data from Google Apps Script endpoint if configured
   const fetchGasData = useCallback(async (url: string) => {

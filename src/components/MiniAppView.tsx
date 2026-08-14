@@ -76,31 +76,42 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     }
   }, [activeUser]);
 
-  // Derive dynamic list of users
+  // Derive dynamic list of users (excluding bots)
   const userSet = new Set<string>();
   if (registeredUsers && registeredUsers.length > 0) {
     registeredUsers.forEach(u => {
+      const isBot = u.username?.toLowerCase().includes('bot') || u.firstName?.toLowerCase().includes('bot');
+      if (isBot) return;
       const name = u.firstName || u.username || `User ${u.userId}`;
-      if (name) userSet.add(name);
+      if (name && name.trim()) userSet.add(name.trim());
     });
   }
   expenses.forEach(e => {
-    if (e.paidBy) userSet.add(e.paidBy);
-    if (e.createdBy) userSet.add(e.createdBy);
+    if (e.paidBy && !e.paidBy.toLowerCase().includes('bot') && e.paidBy !== 'Alex' && e.paidBy !== 'Sam') userSet.add(e.paidBy);
+    if (e.createdBy && !e.createdBy.toLowerCase().includes('bot') && e.createdBy !== 'Alex' && e.createdBy !== 'Sam') userSet.add(e.createdBy);
   });
   settlements.forEach(s => {
-    if (s.payer) userSet.add(s.payer);
-    if (s.receiver) userSet.add(s.receiver);
+    if (s.payer && !s.payer.toLowerCase().includes('bot') && s.payer !== 'Alex' && s.payer !== 'Sam') userSet.add(s.payer);
+    if (s.receiver && !s.receiver.toLowerCase().includes('bot') && s.receiver !== 'Alex' && s.receiver !== 'Sam') userSet.add(s.receiver);
   });
-  if (activeUser) userSet.add(activeUser);
-
-  if (userSet.size < 2) {
-    userSet.add('Alex');
-    userSet.add('Sam');
+  if (activeUser && !activeUser.toLowerCase().includes('bot') && activeUser !== 'Alex' && activeUser !== 'Sam') {
+    userSet.add(activeUser);
   }
 
+  // Ensure legacy mock names Alex and Sam are not included
+  userSet.delete('Alex');
+  userSet.delete('Sam');
+
   const availableUsers = Array.from(userSet).filter(Boolean);
-  const otherUser = availableUsers.find(u => u !== paidBy) || 'Group';
+  if (availableUsers.length === 0) {
+    if (activeUser && activeUser !== 'Alex' && activeUser !== 'Sam') {
+      availableUsers.push(activeUser);
+    } else {
+      availableUsers.push('Me');
+    }
+  }
+
+  const otherUser = availableUsers.find(u => u !== paidBy) || (availableUsers.length > 1 ? availableUsers[1] : 'Group');
 
   // Calculate Net Balances grouped by Currency dynamically across all members
   const calculateCurrencyBalances = () => {
