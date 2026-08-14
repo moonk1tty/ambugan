@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { MiniAppView } from './components/MiniAppView';
-import { Expense, Settlement } from './types';
+import { Expense, Settlement, RegisteredUser } from './types';
 
 const STORAGE_KEYS = {
   GAS_URL: 'splitsquad_gas_url',
   EXPENSES: 'splitsquad_expenses',
   SETTLEMENTS: 'splitsquad_settlements',
-  ACTIVE_USER: 'splitsquad_active_user'
+  ACTIVE_USER: 'splitsquad_active_user',
+  REGISTERED_USERS: 'splitsquad_registered_users'
 };
 
 const DEFAULT_EXPENSES: Expense[] = [
@@ -62,6 +63,14 @@ export default function App() {
     return localStorage.getItem(STORAGE_KEYS.ACTIVE_USER) || 'Alex';
   });
 
+  const [registeredUsers, setRegisteredUsers] = useState<RegisteredUser[]>(() => {
+    const saved = localStorage.getItem(STORAGE_KEYS.REGISTERED_USERS);
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { /* fallback */ }
+    }
+    return [];
+  });
+
   const [gasUrl, setGasUrl] = useState<string>(() => {
     return localStorage.getItem(STORAGE_KEYS.GAS_URL) || (import.meta.env.VITE_GAS_URL as string) || '';
   });
@@ -90,6 +99,10 @@ export default function App() {
   }, [activeUser]);
 
   useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.REGISTERED_USERS, JSON.stringify(registeredUsers));
+  }, [registeredUsers]);
+
+  useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.GAS_URL, gasUrl);
   }, [gasUrl]);
 
@@ -100,6 +113,18 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.SETTLEMENTS, JSON.stringify(settlements));
   }, [settlements]);
+
+  // Check Telegram WebApp user context on load
+  useEffect(() => {
+    const tg = (window as any).Telegram?.WebApp;
+    if (tg?.initDataUnsafe?.user) {
+      const tgUser = tg.initDataUnsafe.user;
+      const tgName = tgUser.first_name || tgUser.username || `User ${tgUser.id}`;
+      if (tgName) {
+        setActiveUser(tgName);
+      }
+    }
+  }, []);
 
   // Fetch data from Google Apps Script endpoint if configured
   const fetchGasData = useCallback(async (url: string) => {
@@ -119,6 +144,9 @@ export default function App() {
         }
         if (Array.isArray(result.data.settlements)) {
           setSettlements(result.data.settlements);
+        }
+        if (Array.isArray(result.data.users)) {
+          setRegisteredUsers(result.data.users);
         }
       } else {
         setIsOnlineGas(false);
@@ -165,6 +193,9 @@ export default function App() {
           if (Array.isArray(result.data.expenses)) {
             setExpenses(result.data.expenses);
           }
+          if (Array.isArray(result.data.users)) {
+            setRegisteredUsers(result.data.users);
+          }
         }
       } catch (err) {
         console.warn('Failed to sync expense with Google Apps Script backend:', err);
@@ -199,6 +230,9 @@ export default function App() {
           if (Array.isArray(result.data.settlements)) {
             setSettlements(result.data.settlements);
           }
+          if (Array.isArray(result.data.users)) {
+            setRegisteredUsers(result.data.users);
+          }
         }
       } catch (err) {
         console.warn('Failed to sync settlement with Google Apps Script backend:', err);
@@ -213,6 +247,7 @@ export default function App() {
         <MiniAppView
           expenses={expenses}
           settlements={settlements}
+          registeredUsers={registeredUsers}
           activeUser={activeUser}
           setActiveUser={setActiveUser}
           onAddExpense={handleAddExpense}

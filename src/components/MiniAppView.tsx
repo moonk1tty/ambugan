@@ -10,11 +10,12 @@ import {
   Sliders,
   Send
 } from 'lucide-react';
-import { Expense, Settlement } from '../types';
+import { Expense, Settlement, RegisteredUser } from '../types';
 
 interface MiniAppViewProps {
   expenses: Expense[];
   settlements: Settlement[];
+  registeredUsers?: RegisteredUser[];
   activeUser: string;
   setActiveUser: (user: string) => void;
   onAddExpense: (expense: Omit<Expense, 'id' | 'timestamp'>) => void;
@@ -37,6 +38,7 @@ const SUPPORTED_CURRENCIES = [
 export const MiniAppView: React.FC<MiniAppViewProps> = ({
   expenses,
   settlements,
+  registeredUsers = [],
   activeUser,
   setActiveUser,
   onAddExpense,
@@ -52,6 +54,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState('₱'); // Default to Pesos
   const [paidBy, setPaidBy] = useState(activeUser);
+  const [isCustomUser, setIsCustomUser] = useState(false);
   const [splitMode, setSplitMode] = useState<'50/50 Equal' | 'Exact Amounts' | 'Percentages' | 'Single Payer (100% owed)'>('50/50 Equal');
   const [exactA, setExactA] = useState('');
   const [exactB, setExactB] = useState('');
@@ -66,12 +69,40 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   // Simple Yes/No Settle Up Confirmation Modal State
   const [showSettleModal, setShowSettleModal] = useState(false);
 
-  // Sync paidBy with activeUser when user changes
+  // Sync paidBy with activeUser when activeUser changes
   useEffect(() => {
-    setPaidBy(activeUser);
+    if (activeUser) {
+      setPaidBy(activeUser);
+    }
   }, [activeUser]);
 
-  // Calculate Net Balances grouped by Currency (no conversion across currencies)
+  // Derive dynamic list of users
+  const userSet = new Set<string>();
+  if (registeredUsers && registeredUsers.length > 0) {
+    registeredUsers.forEach(u => {
+      const name = u.firstName || u.username || `User ${u.userId}`;
+      if (name) userSet.add(name);
+    });
+  }
+  expenses.forEach(e => {
+    if (e.paidBy) userSet.add(e.paidBy);
+    if (e.createdBy) userSet.add(e.createdBy);
+  });
+  settlements.forEach(s => {
+    if (s.payer) userSet.add(s.payer);
+    if (s.receiver) userSet.add(s.receiver);
+  });
+  if (activeUser) userSet.add(activeUser);
+
+  if (userSet.size < 2) {
+    userSet.add('Alex');
+    userSet.add('Sam');
+  }
+
+  const availableUsers = Array.from(userSet).filter(Boolean);
+  const otherUser = availableUsers.find(u => u !== paidBy) || 'Group';
+
+  // Calculate Net Balances grouped by Currency dynamically across all members
   const calculateCurrencyBalances = () => {
     const currencySet = new Set<string>();
     expenses.forEach(e => currencySet.add(e.currency || '₱'));
@@ -80,59 +111,86 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
     const results: Array<{
       currency: string;
-      netAlex: number; // positive = Sam owes Alex, negative = Alex owes Sam
-      paidAlex: number;
-      shareAlex: number;
-      paidSam: number;
-      shareSam: number;
+      debtor: string;
+      creditor: string;
+      amount: number;
+      summaryText: string;
     }> = [];
 
     currencySet.forEach(curr => {
-      let paidAlex = 0;
-      let shareAlex = 0;
-      let paidSam = 0;
-      let shareSam = 0;
+      const userNetMap: Record<string, number> = {};
+      availableUsers.forEach(u => { userNetMap[u] = 0; });
 
       expenses.filter(e => (e.currency || '₱') === curr).forEach(e => {
         const amt = Number(e.amount) || 0;
-        if (e.paidBy === 'Alex') paidAlex += amt;
-        else paidSam += amt;
+        const payer = e.paidBy || availableUsers[0];
+        if (userNetMap[payer] === undefined) userNetMap[payer] = 0;
+
+        userNetMap[payer] += amt;
 
         if (e.splitMode === '50/50 Equal') {
-          shareAlex += amt / 2;
-          shareSam += amt / 2;
+          const splitTarget = availableUsers.find(u => u !== payer) || availableUsers[1] || 'Sam';
+          userNetMap[payer] -= amt / 2;
+          if (userNetMap[splitTarget] === undefined) userNetMap[splitTarget] = 0;
+          userNetMap[splitTarget] -= amt / 2;
         } else if (e.splitMode === 'Exact Amounts') {
-          shareAlex += Number(e.userAShare) || 0;
-          shareSam += Number(e.userBShare) || 0;
+          const userA = payer;
+          const userB = availableUsers.find(u => u !== payer) || availableUsers[1] || 'Sam';
+          const shareA = Number(e.userAShare) || (amt / 2);
+          const shareB = Number(e.userBShare) || (amt / 2);
+          userNetMap[userA] -= shareA;
+          if (userNetMap[userB] === undefined) userNetMap[userB] = 0;
+          userNetMap[userB] -= shareB;
         } else if (e.splitMode === 'Percentages') {
+          const userA = payer;
+          const userB = availableUsers.find(u => u !== payer) || availableUsers[1] || 'Sam';
           const pA = (Number(e.userAPercent) || 50) / 100;
           const pB = (Number(e.userBPercent) || 50) / 100;
-          shareAlex += amt * pA;
-          shareSam += amt * pB;
+          userNetMap[userA] -= amt * pA;
+          if (userNetMap[userB] === undefined) userNetMap[userB] = 0;
+          userNetMap[userB] -= amt * pB;
         } else if (e.splitMode === 'Single Payer (100% owed)') {
-          if (e.paidBy === 'Alex') {
-            shareSam += amt; // Sam owes 100%
-          } else {
-            shareAlex += amt; // Alex owes 100%
-          }
+          const userB = availableUsers.find(u => u !== payer) || availableUsers[1] || 'Sam';
+          if (userNetMap[userB] === undefined) userNetMap[userB] = 0;
+          userNetMap[userB] -= amt;
         }
       });
 
-      let netSettlement = 0; // Positive if Alex paid Sam, negative if Sam paid Alex
       settlements.filter(s => (s.currency || '₱') === curr).forEach(s => {
         const amt = Number(s.amount) || 0;
-        if (s.payer === 'Alex') netSettlement += amt;
-        else netSettlement -= amt;
+        if (s.payer) {
+          if (userNetMap[s.payer] === undefined) userNetMap[s.payer] = 0;
+          userNetMap[s.payer] += amt;
+        }
+        if (s.receiver) {
+          if (userNetMap[s.receiver] === undefined) userNetMap[s.receiver] = 0;
+          userNetMap[s.receiver] -= amt;
+        }
       });
 
-      const netAlex = (paidAlex - shareAlex) + netSettlement;
-      results.push({
-        currency: curr,
-        netAlex,
-        paidAlex,
-        shareAlex,
-        paidSam,
-        shareSam
+      const debtors: Array<{ name: string; bal: number }> = [];
+      const creditors: Array<{ name: string; bal: number }> = [];
+
+      Object.entries(userNetMap).forEach(([name, net]) => {
+        if (net > 0.01) creditors.push({ name, bal: net });
+        else if (net < -0.01) debtors.push({ name, bal: Math.abs(net) });
+      });
+
+      debtors.forEach(d => {
+        creditors.forEach(c => {
+          const oweAmt = Math.min(d.bal, c.bal);
+          if (oweAmt >= 0.01) {
+            results.push({
+              currency: curr,
+              debtor: d.name,
+              creditor: c.name,
+              amount: oweAmt,
+              summaryText: `${d.name} owes ${c.name}`
+            });
+            d.bal -= oweAmt;
+            c.bal -= oweAmt;
+          }
+        });
       });
     });
 
@@ -140,7 +198,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   };
 
   const currencyBalances = calculateCurrencyBalances();
-  const activeBalances = currencyBalances.filter(cb => Math.abs(cb.netAlex) >= 0.01);
+  const activeBalances = currencyBalances.filter(cb => cb.amount >= 0.01);
 
   const handleSingleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -150,7 +208,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       description: description.trim(),
       amount: parseFloat(amount),
       currency,
-      paidBy,
+      paidBy: paidBy.trim() || activeUser,
       splitMode,
       userAShare: exactA ? parseFloat(exactA) : undefined,
       userBShare: exactB ? parseFloat(exactB) : undefined,
@@ -169,7 +227,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     setTimeout(() => setShowSuccessToast(false), 3000);
   };
 
-  // Simple Yes/No Settle Up Confirmation Handler
+  // Settle Up Handler
   const handleConfirmSettleUp = () => {
     if (activeBalances.length === 0) {
       setShowSettleModal(false);
@@ -177,14 +235,10 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     }
 
     activeBalances.forEach(cb => {
-      const oweAmount = Math.abs(cb.netAlex);
-      const payer = cb.netAlex < 0 ? 'Alex' : 'Sam';
-      const receiver = cb.netAlex < 0 ? 'Sam' : 'Alex';
-
       onSettleUp({
-        payer,
-        receiver,
-        amount: oweAmount,
+        payer: cb.debtor,
+        receiver: cb.creditor,
+        amount: cb.amount,
         currency: cb.currency,
         method: 'Settled Up'
       });
@@ -276,12 +330,12 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
               ) : (
                 activeBalances.map((ab, idx) => (
                   <span key={idx} className="text-sm font-bold font-mono tracking-tight text-[#1B1B19]">
-                    {ab.currency}{Math.abs(ab.netAlex).toFixed(2)}
+                    {ab.currency}{ab.amount.toFixed(2)}
                   </span>
                 ))
               )}
               <span className="text-xs text-[#1B1B19]/60 font-medium truncate">
-                {activeBalances.length === 0 ? '• Settled' : `• ${activeBalances.map(ab => ab.netAlex > 0 ? 'Sam owes Alex' : 'Alex owes Sam').join(', ')}`}
+                {activeBalances.length === 0 ? '• Settled' : `• ${activeBalances.map(ab => `${ab.debtor} owes ${ab.creditor}`).join(', ')}`}
               </span>
             </div>
           </div>
@@ -364,16 +418,57 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
               </div>
             </div>
 
+            {/* Paid By Selector */}
             <div>
-              <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/50 mb-1">Paid By</label>
-              <select
-                value={paidBy}
-                onChange={e => setPaidBy(e.target.value)}
-                className="w-full bg-white/60 border border-black/5 px-3 py-2 rounded-xl text-xs font-semibold text-[#1B1B19] focus:outline-none focus:bg-white transition"
-              >
-                <option value="Alex">Alex</option>
-                <option value="Sam">Sam</option>
-              </select>
+              <div className="flex justify-between items-center mb-1">
+                <label className="text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/50">Paid By</label>
+                {!isCustomUser && (
+                  <button
+                    type="button"
+                    onClick={() => setIsCustomUser(true)}
+                    className="text-[10px] text-[#4A6CF7] font-semibold hover:underline"
+                  >
+                    + Type Name
+                  </button>
+                )}
+              </div>
+
+              {isCustomUser ? (
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    placeholder="Enter payer name"
+                    value={paidBy}
+                    onChange={e => setPaidBy(e.target.value)}
+                    className="w-full bg-white/60 border border-black/5 px-3 py-2 rounded-xl text-xs font-semibold text-[#1B1B19] focus:outline-none focus:bg-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setIsCustomUser(false)}
+                    className="bg-black/5 px-2.5 py-1 rounded-xl text-[10px] font-semibold text-[#1B1B19]/70 hover:bg-black/10 shrink-0"
+                  >
+                    List
+                  </button>
+                </div>
+              ) : (
+                <select
+                  value={paidBy}
+                  onChange={e => {
+                    if (e.target.value === '__custom__') {
+                      setIsCustomUser(true);
+                      setPaidBy('');
+                    } else {
+                      setPaidBy(e.target.value);
+                    }
+                  }}
+                  className="w-full bg-white/60 border border-black/5 px-3 py-2 rounded-xl text-xs font-semibold text-[#1B1B19] focus:outline-none focus:bg-white transition"
+                >
+                  {availableUsers.map(u => (
+                    <option key={u} value={u}>{u}</option>
+                  ))}
+                  <option value="__custom__">+ Add Custom Member Name...</option>
+                </select>
+              )}
             </div>
 
             {/* Split Mode Selector */}
@@ -406,7 +501,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             {splitMode === 'Exact Amounts' && (
               <div className="bg-white/40 p-2.5 rounded-xl border border-black/5 grid grid-cols-2 gap-2 text-xs">
                 <div>
-                  <label className="text-[10px] font-mono text-[#1B1B19]/60">Alex ({currency})</label>
+                  <label className="text-[10px] font-mono text-[#1B1B19]/60 truncate block">{paidBy || 'Payer'} ({currency})</label>
                   <input
                     type="number"
                     step="0.01"
@@ -417,7 +512,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="text-[10px] font-mono text-[#1B1B19]/60">Sam ({currency})</label>
+                  <label className="text-[10px] font-mono text-[#1B1B19]/60 truncate block">{otherUser} ({currency})</label>
                   <input
                     type="number"
                     step="0.01"
@@ -433,7 +528,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             {splitMode === 'Percentages' && (
               <div className="bg-white/40 p-2.5 rounded-xl border border-black/5 grid grid-cols-2 gap-2 text-xs">
                 <div>
-                  <label className="text-[10px] font-mono text-[#1B1B19]/60">Alex %</label>
+                  <label className="text-[10px] font-mono text-[#1B1B19]/60 truncate block">{paidBy || 'Payer'} %</label>
                   <input
                     type="number"
                     placeholder="50"
@@ -447,7 +542,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="text-[10px] font-mono text-[#1B1B19]/60">Sam %</label>
+                  <label className="text-[10px] font-mono text-[#1B1B19]/60 truncate block">{otherUser} %</label>
                   <input
                     type="number"
                     placeholder="50"
@@ -492,9 +587,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                     <div key={i} className="bg-white/60 p-3 rounded-xl border border-black/5 text-xs flex justify-between items-center">
                       <span className="text-[#1B1B19]/70 font-medium">{cb.currency} Balance:</span>
                       <span className="font-bold font-mono text-sm text-[#1B1B19]">
-                        {cb.netAlex > 0
-                          ? `Sam owes Alex ${cb.currency}${cb.netAlex.toFixed(2)}`
-                          : `Alex owes Sam ${cb.currency}${Math.abs(cb.netAlex).toFixed(2)}`}
+                        {cb.debtor} owes {cb.creditor} {cb.currency}{cb.amount.toFixed(2)}
                       </span>
                     </div>
                   ))}
@@ -611,6 +704,38 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
               System Configuration
             </div>
 
+            {/* Active User Selection */}
+            <div>
+              <label className="block text-[11px] font-semibold text-[#1B1B19]/80 mb-1">Active User Identity</label>
+              <select
+                value={activeUser}
+                onChange={e => setActiveUser(e.target.value)}
+                className="w-full bg-white/80 border border-black/5 rounded-xl px-3 py-2 text-[#1B1B19] font-medium text-xs focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20"
+              >
+                {availableUsers.map(u => (
+                  <option key={u} value={u}>{u}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Detected Members from Google Sheets Users tab */}
+            {registeredUsers && registeredUsers.length > 0 && (
+              <div className="bg-white/50 p-3 rounded-xl border border-black/5 space-y-1.5">
+                <div className="text-[11px] font-semibold text-[#1B1B19] flex justify-between items-center">
+                  <span>Group Members Sync ({registeredUsers.length})</span>
+                  <span className="text-[9px] font-mono text-[#4A6CF7]">Live</span>
+                </div>
+                <div className="space-y-1 max-h-32 overflow-y-auto">
+                  {registeredUsers.map((u, i) => (
+                    <div key={i} className="flex justify-between items-center text-[10px] font-mono text-[#1B1B19]/70 bg-white/70 p-1.5 rounded-lg border border-black/5">
+                      <span className="font-medium text-[#1B1B19]">{u.firstName} {u.username ? `(${u.username})` : ''}</span>
+                      <span className="text-[9px] text-[#1B1B19]/40">ID: {u.userId}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div>
               <label className="block text-[11px] font-medium text-[#1B1B19]/70 mb-1">Google Apps Script Web App URL</label>
               <input
@@ -666,7 +791,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 <p className="text-[#1B1B19]/60 font-semibold border-b border-black/5 pb-1">Balances to clear:</p>
                 {activeBalances.map((ab, idx) => (
                   <p key={idx} className="text-[#1B1B19] font-bold">
-                    • {ab.currency}{Math.abs(ab.netAlex).toFixed(2)} ({ab.netAlex > 0 ? 'Sam ➔ Alex' : 'Alex ➔ Sam'})
+                    • {ab.currency}{ab.amount.toFixed(2)} ({ab.debtor} ➔ {ab.creditor})
                   </p>
                 ))}
               </div>

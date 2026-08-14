@@ -1,3 +1,11 @@
+export interface RegisteredUser {
+  userId: string;
+  username: string;
+  firstName: string;
+  chatId: string;
+  lastSeen?: string;
+}
+
 export interface Expense {
   id: string;
   timestamp: string;
