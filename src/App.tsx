@@ -20,8 +20,11 @@ function getChatId(): string {
     return String(tg.initDataUnsafe.chat.id);
   }
   const urlParams = new URLSearchParams(window.location.search);
-  const paramChatId = urlParams.get('chat_id') || urlParams.get('chatId');
+  const paramChatId = urlParams.get('chat_id') || urlParams.get('chatId') || urlParams.get('start_param');
   if (paramChatId) return paramChatId;
+  if (tg?.initDataUnsafe?.start_param) {
+    return String(tg.initDataUnsafe.start_param);
+  }
   if (tg?.initDataUnsafe?.user?.id) {
     return String(tg.initDataUnsafe.user.id);
   }
@@ -29,14 +32,16 @@ function getChatId(): string {
 }
 
 export default function App() {
+  const chatId = getChatId();
+
   const [activeUser, setActiveUser] = useState<string>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.ACTIVE_USER);
-    if (saved && saved !== 'Alex' && saved !== 'Sam') return saved;
+    const saved = localStorage.getItem(`${STORAGE_KEYS.ACTIVE_USER}_${chatId}`);
+    if (saved) return saved;
     return '';
   });
 
   const [registeredUsers, setRegisteredUsers] = useState<RegisteredUser[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.REGISTERED_USERS);
+    const saved = localStorage.getItem(`${STORAGE_KEYS.REGISTERED_USERS}_${chatId}`);
     if (saved) {
       try { return JSON.parse(saved); } catch (e) { /* fallback */ }
     }
@@ -50,7 +55,7 @@ export default function App() {
   const [isOnlineGas, setIsOnlineGas] = useState<boolean>(false);
 
   const [expenses, setExpenses] = useState<Expense[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.EXPENSES);
+    const saved = localStorage.getItem(`${STORAGE_KEYS.EXPENSES}_${chatId}`);
     if (saved) {
       try { return JSON.parse(saved); } catch (e) { /* fallback */ }
     }
@@ -58,33 +63,35 @@ export default function App() {
   });
 
   const [settlements, setSettlements] = useState<Settlement[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.SETTLEMENTS);
+    const saved = localStorage.getItem(`${STORAGE_KEYS.SETTLEMENTS}_${chatId}`);
     if (saved) {
       try { return JSON.parse(saved); } catch (e) { /* fallback */ }
     }
     return DEFAULT_SETTLEMENTS;
   });
 
-  // Save to localStorage when state changes
+  // Save to localStorage scoped by chatId when state changes
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, activeUser);
-  }, [activeUser]);
+    if (activeUser) {
+      localStorage.setItem(`${STORAGE_KEYS.ACTIVE_USER}_${chatId}`, activeUser);
+    }
+  }, [activeUser, chatId]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.REGISTERED_USERS, JSON.stringify(registeredUsers));
-  }, [registeredUsers]);
+    localStorage.setItem(`${STORAGE_KEYS.REGISTERED_USERS}_${chatId}`, JSON.stringify(registeredUsers));
+  }, [registeredUsers, chatId]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.GAS_URL, gasUrl);
   }, [gasUrl]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(expenses));
-  }, [expenses]);
+    localStorage.setItem(`${STORAGE_KEYS.EXPENSES}_${chatId}`, JSON.stringify(expenses));
+  }, [expenses, chatId]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.SETTLEMENTS, JSON.stringify(settlements));
-  }, [settlements]);
+    localStorage.setItem(`${STORAGE_KEYS.SETTLEMENTS}_${chatId}`, JSON.stringify(settlements));
+  }, [settlements, chatId]);
 
   // Check Telegram WebApp user context on load or fall back to first registered user
   useEffect(() => {
@@ -119,12 +126,28 @@ export default function App() {
 
     try {
       const chatId = getChatId();
-      const queryUrl = chatId 
-        ? `${url}?action=get_data&chatId=${encodeURIComponent(chatId)}` 
-        : `${url}?action=get_data`;
-      
-      const response = await fetch(queryUrl);
-      const result = await response.json();
+      const tg = (window as any).Telegram?.WebApp;
+      const tgUser = tg?.initDataUnsafe?.user;
+
+      let result: any;
+      if (tgUser && chatId) {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'get_data',
+            chatId: chatId,
+            user: tgUser
+          })
+        });
+        result = await response.json();
+      } else {
+        const queryUrl = chatId 
+          ? `${url}?action=get_data&chatId=${encodeURIComponent(chatId)}` 
+          : `${url}?action=get_data`;
+        const response = await fetch(queryUrl);
+        result = await response.json();
+      }
 
       if (result.status === 'success' && result.data) {
         setIsOnlineGas(true);
@@ -169,13 +192,17 @@ export default function App() {
     if (gasUrl && gasUrl.startsWith('http')) {
       try {
         const chatId = getChatId();
+        const tg = (window as any).Telegram?.WebApp;
+        const tgUser = tg?.initDataUnsafe?.user;
+
         const response = await fetch(gasUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
           body: JSON.stringify({
             action: 'add_expense',
             expense: created,
-            chatId: chatId
+            chatId: chatId,
+            user: tgUser
           })
         });
         const result = await response.json();
@@ -208,13 +235,17 @@ export default function App() {
     if (gasUrl && gasUrl.startsWith('http')) {
       try {
         const chatId = getChatId();
+        const tg = (window as any).Telegram?.WebApp;
+        const tgUser = tg?.initDataUnsafe?.user;
+
         const response = await fetch(gasUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
           body: JSON.stringify({
             action: 'settle_up',
             settlement: created,
-            chatId: chatId
+            chatId: chatId,
+            user: tgUser
           })
         });
         const result = await response.json();

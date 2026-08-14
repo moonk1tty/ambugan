@@ -431,55 +431,16 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
             {/* Paid By Selector */}
             <div>
-              <div className="flex justify-between items-center mb-1">
-                <label className="text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/50">Paid By</label>
-                {!isCustomUser && (
-                  <button
-                    type="button"
-                    onClick={() => setIsCustomUser(true)}
-                    className="text-[10px] text-[#4A6CF7] font-semibold hover:underline"
-                  >
-                    + Type Name
-                  </button>
-                )}
-              </div>
-
-              {isCustomUser ? (
-                <div className="flex gap-1.5">
-                  <input
-                    type="text"
-                    placeholder="Enter payer name"
-                    value={paidBy}
-                    onChange={e => setPaidBy(e.target.value)}
-                    className="w-full bg-white/60 border border-black/5 px-3 py-2 rounded-xl text-xs font-semibold text-[#1B1B19] focus:outline-none focus:bg-white"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setIsCustomUser(false)}
-                    className="bg-black/5 px-2.5 py-1 rounded-xl text-[10px] font-semibold text-[#1B1B19]/70 hover:bg-black/10 shrink-0"
-                  >
-                    List
-                  </button>
-                </div>
-              ) : (
-                <select
-                  value={paidBy}
-                  onChange={e => {
-                    if (e.target.value === '__custom__') {
-                      setIsCustomUser(true);
-                      setPaidBy('');
-                    } else {
-                      setPaidBy(e.target.value);
-                    }
-                  }}
-                  className="w-full bg-white/60 border border-black/5 px-3 py-2 rounded-xl text-xs font-semibold text-[#1B1B19] focus:outline-none focus:bg-white transition"
-                >
-                  {availableUsers.map(u => (
-                    <option key={u} value={u}>{u}</option>
-                  ))}
-                  <option value="__custom__">+ Add Custom Member Name...</option>
-                </select>
-              )}
+              <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/50 mb-1">Paid By</label>
+              <select
+                value={paidBy}
+                onChange={e => setPaidBy(e.target.value)}
+                className="w-full bg-white/60 border border-black/5 px-3 py-2.5 rounded-xl text-xs font-semibold text-[#1B1B19] focus:outline-none focus:bg-white transition"
+              >
+                {availableUsers.map(u => (
+                  <option key={u} value={u}>{u}</option>
+                ))}
+              </select>
             </div>
 
             {/* Split Mode Selector */}
