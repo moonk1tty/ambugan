@@ -51,8 +51,20 @@ function getChatId(): string {
     return String(tg.initDataUnsafe.start_param);
   }
 
-  // 5. Fallback to user ID for private 1-on-1 chats
-  if (tg?.initDataUnsafe?.user?.id) {
+  // 5. Fallback to user ID - this ONLY correctly identifies "the chat" when the Mini App
+  // is opened from a private 1-on-1 chat with the bot. If the app is opened from a group
+  // via the bot's default menu button / attachment icon (i.e. NOT via the inline "Open App"
+  // button the bot sends, which encodes the real group chat id as startapp=...), Telegram
+  // does not expose the group's chat id at all - only the launching user's own id. Since
+  // that's the same physical account every time, every group ends up resolving to the same
+  // "chat" as whatever was used during solo/private testing. There's no way to recover the
+  // real group id in that scenario, so we deliberately do NOT fall back to the user id when
+  // we're inside a group/supergroup - it's better to show "no chat detected" than to silently
+  // merge data into the wrong group.
+  const chatType = tg?.initDataUnsafe?.chat_type; // 'group' | 'supergroup' | 'channel' | 'sender' | 'private'
+  const isGroupContext = chatType === 'group' || chatType === 'supergroup';
+
+  if (!isGroupContext && tg?.initDataUnsafe?.user?.id) {
     return String(tg.initDataUnsafe.user.id);
   }
 
