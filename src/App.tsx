@@ -97,6 +97,8 @@ function getChatId(): string {
   return '';
 }
 
+const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbzBu8cufpEzEl9vZHTj4wajJn_Ax5bfFL9hN3yT5xg/exec';
+
 export default function App() {
   const [chatId, setChatId] = useState<string>(() => getChatId());
 
@@ -130,7 +132,7 @@ export default function App() {
   const [settlements, setSettlements] = useState<Settlement[]>([]);
 
   const [gasUrl, setGasUrl] = useState<string>(() => {
-    return localStorage.getItem(STORAGE_KEYS.GAS_URL) || (import.meta.env.VITE_GAS_URL as string) || '';
+    return localStorage.getItem(STORAGE_KEYS.GAS_URL) || (import.meta.env.VITE_GAS_URL as string) || DEFAULT_GAS_URL;
   });
 
   const [isOnlineGas, setIsOnlineGas] = useState<boolean>(false);
