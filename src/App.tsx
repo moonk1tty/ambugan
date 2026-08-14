@@ -16,18 +16,46 @@ const DEFAULT_SETTLEMENTS: Settlement[] = [];
 
 function getChatId(): string {
   const tg = (window as any).Telegram?.WebApp;
+  
+  // 1. Direct initDataUnsafe chat object (present when launched from attachment/direct group context)
   if (tg?.initDataUnsafe?.chat?.id) {
     return String(tg.initDataUnsafe.chat.id);
   }
+
+  // 2. Query parameters in window.location.search
   const urlParams = new URLSearchParams(window.location.search);
-  const paramChatId = urlParams.get('chat_id') || urlParams.get('chatId') || urlParams.get('start_param');
+  const paramChatId = urlParams.get('startapp') || urlParams.get('chat_id') || urlParams.get('chatId') || urlParams.get('start_param') || urlParams.get('tgWebAppStartParam');
   if (paramChatId) return paramChatId;
+
+  // 3. Hash parameters in window.location.hash
+  if (window.location.hash) {
+    try {
+      const hashClean = window.location.hash.replace(/^#/, '');
+      const hashParams = new URLSearchParams(hashClean);
+      const hashChatId = hashParams.get('startapp') || hashParams.get('chat_id') || hashParams.get('chatId') || hashParams.get('start_param') || hashParams.get('tgWebAppStartParam');
+      if (hashChatId) return hashChatId;
+
+      const tgWebAppData = hashParams.get('tgWebAppData');
+      if (tgWebAppData) {
+        const appDataParams = new URLSearchParams(decodeURIComponent(tgWebAppData));
+        const appDataStartParam = appDataParams.get('start_param');
+        if (appDataStartParam) return appDataStartParam;
+      }
+    } catch (e) {
+      console.error('Error parsing hash params', e);
+    }
+  }
+
+  // 4. Check Telegram start_param in initDataUnsafe
   if (tg?.initDataUnsafe?.start_param) {
     return String(tg.initDataUnsafe.start_param);
   }
+
+  // 5. Fallback to user ID for private 1-on-1 chats
   if (tg?.initDataUnsafe?.user?.id) {
     return String(tg.initDataUnsafe.user.id);
   }
+
   return '';
 }
 
