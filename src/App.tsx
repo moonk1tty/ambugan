@@ -14,6 +14,20 @@ const DEFAULT_EXPENSES: Expense[] = [];
 
 const DEFAULT_SETTLEMENTS: Settlement[] = [];
 
+function getChatId(): string {
+  const tg = (window as any).Telegram?.WebApp;
+  if (tg?.initDataUnsafe?.chat?.id) {
+    return String(tg.initDataUnsafe.chat.id);
+  }
+  const urlParams = new URLSearchParams(window.location.search);
+  const paramChatId = urlParams.get('chat_id') || urlParams.get('chatId');
+  if (paramChatId) return paramChatId;
+  if (tg?.initDataUnsafe?.user?.id) {
+    return String(tg.initDataUnsafe.user.id);
+  }
+  return '';
+}
+
 export default function App() {
   const [activeUser, setActiveUser] = useState<string>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.ACTIVE_USER);
@@ -104,7 +118,12 @@ export default function App() {
     }
 
     try {
-      const response = await fetch(`${url}?action=get_data`);
+      const chatId = getChatId();
+      const queryUrl = chatId 
+        ? `${url}?action=get_data&chatId=${encodeURIComponent(chatId)}` 
+        : `${url}?action=get_data`;
+      
+      const response = await fetch(queryUrl);
       const result = await response.json();
 
       if (result.status === 'success' && result.data) {
@@ -149,12 +168,14 @@ export default function App() {
     // Send to GAS backend if URL is configured
     if (gasUrl && gasUrl.startsWith('http')) {
       try {
+        const chatId = getChatId();
         const response = await fetch(gasUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
           body: JSON.stringify({
             action: 'add_expense',
-            expense: created
+            expense: created,
+            chatId: chatId
           })
         });
         const result = await response.json();
@@ -186,12 +207,14 @@ export default function App() {
     // Send to GAS backend if URL is configured
     if (gasUrl && gasUrl.startsWith('http')) {
       try {
+        const chatId = getChatId();
         const response = await fetch(gasUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
           body: JSON.stringify({
             action: 'settle_up',
-            settlement: created
+            settlement: created,
+            chatId: chatId
           })
         });
         const result = await response.json();
