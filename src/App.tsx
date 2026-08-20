@@ -97,7 +97,7 @@ function getChatId(): string {
   return '';
 }
 
-const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbzBu8cufpEzEl9vZHTj4wajJn_Ax5bfFL9hN3yT5xg/exec';
+const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbyzs2hkta9HPE7MDkHgXw6Fk56r9WBaSb_7M9Y3H_cIUfZsDdJJsIpF8dEqTvC4bU5J/exec';
 
 export default function App() {
   const [chatId, setChatId] = useState<string>(() => getChatId());
@@ -132,7 +132,11 @@ export default function App() {
   const [settlements, setSettlements] = useState<Settlement[]>([]);
 
   const [gasUrl, setGasUrl] = useState<string>(() => {
-    return localStorage.getItem(STORAGE_KEYS.GAS_URL) || (import.meta.env.VITE_GAS_URL as string) || DEFAULT_GAS_URL;
+    const saved = localStorage.getItem(STORAGE_KEYS.GAS_URL);
+    if (!saved || saved.includes('AKfycbzBu8cufpEzEl9vZHTj4wajJn_Ax5bfFL9hN3yT5xg')) {
+      return (import.meta.env.VITE_GAS_URL as string) || DEFAULT_GAS_URL;
+    }
+    return saved;
   });
 
   const [isOnlineGas, setIsOnlineGas] = useState<boolean>(false);
@@ -199,44 +203,50 @@ export default function App() {
 
     try {
       const currentChatId = targetChatId || getChatId();
-      const tg = (window as any).Telegram?.WebApp;
-      const tgUser = tg?.initDataUnsafe?.user;
+      const queryUrl = currentChatId 
+        ? `${url}${url.includes('?') ? '&' : '?'}action=get_data&chatId=${encodeURIComponent(currentChatId)}` 
+        : `${url}${url.includes('?') ? '&' : '?'}action=get_data`;
 
-      let result: any;
-      if (tgUser && currentChatId) {
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({
-            action: 'get_data',
-            chatId: currentChatId,
-            user: tgUser
-          })
-        });
-        result = await response.json();
-      } else {
-        const queryUrl = currentChatId 
-          ? `${url}?action=get_data&chatId=${encodeURIComponent(currentChatId)}` 
-          : `${url}?action=get_data`;
-        const response = await fetch(queryUrl);
-        result = await response.json();
+      const response = await fetch(queryUrl);
+      const text = await response.text();
+
+      // Check if response is Google Login HTML instead of JSON (happens when "Who has access" is not "Anyone")
+      if (text.trim().startsWith('<') || text.includes('accounts.google.com')) {
+        console.warn('Google Apps Script returned Google Sign-In HTML page. Make sure Web App "Who has access" is set to "Anyone".');
+        setIsOnlineGas(false);
+        return;
       }
+
+      const result = JSON.parse(text);
 
       if (result.status === 'success' && result.data) {
         setIsOnlineGas(true);
-        if (Array.isArray(result.data.expenses)) {
-          setExpenses(result.data.expenses);
-        } else {
-          setExpenses([]);
-        }
-        if (Array.isArray(result.data.settlements)) {
-          setSettlements(result.data.settlements);
-        } else {
-          setSettlements([]);
-        }
-        if (Array.isArray(result.data.users)) {
-          setRegisteredUsers(result.data.users);
-        }
+        const fetchedExpenses = Array.isArray(result.data.expenses) ? result.data.expenses : [];
+        const fetchedSettlements = Array.isArray(result.data.settlements) ? result.data.settlements : [];
+        const fetchedUsers: RegisteredUser[] = Array.isArray(result.data.users) ? [...result.data.users] : [];
+
+        // Also harvest any distinct names from expenses & settlements to ensure no friend is missed
+        const knownNames = new Set(fetchedUsers.map(u => (u.firstName || u.username || '').toLowerCase()));
+        
+        fetchedExpenses.forEach((e: Expense) => {
+          if (e.paidBy && !knownNames.has(e.paidBy.toLowerCase()) && !e.paidBy.toLowerCase().includes('bot') && e.paidBy !== 'Alex' && e.paidBy !== 'Sam') {
+            knownNames.add(e.paidBy.toLowerCase());
+            fetchedUsers.push({ userId: `EXP-${e.paidBy}`, firstName: e.paidBy, username: '', chatId: e.chatId || '', lastSeen: '' });
+          }
+        });
+
+        fetchedSettlements.forEach((s: Settlement) => {
+          [s.payer, s.receiver].forEach(name => {
+            if (name && !knownNames.has(name.toLowerCase()) && !name.toLowerCase().includes('bot') && name !== 'Alex' && name !== 'Sam') {
+              knownNames.add(name.toLowerCase());
+              fetchedUsers.push({ userId: `SET-${name}`, firstName: name, username: '', chatId: s.chatId || '', lastSeen: '' });
+            }
+          });
+        });
+
+        setExpenses(fetchedExpenses);
+        setSettlements(fetchedSettlements);
+        setRegisteredUsers(fetchedUsers);
       } else {
         setIsOnlineGas(false);
       }
