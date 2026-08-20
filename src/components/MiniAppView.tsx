@@ -442,6 +442,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             {/* Paid By Selector */}
             <div>
               <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/50 mb-1">Paid By</label>
+
               <select
                 value={paidBy}
                 onChange={e => setPaidBy(e.target.value)}
