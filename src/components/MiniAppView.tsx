@@ -8,7 +8,9 @@ import {
   ArrowRightLeft, 
   AlertCircle,
   Sliders,
-  Send
+  Send,
+  Settings,
+  RefreshCw
 } from 'lucide-react';
 import { Expense, Settlement, RegisteredUser } from '../types';
 
@@ -70,27 +72,42 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
   // Simple Yes/No Settle Up Confirmation Modal State
   const [showSettleModal, setShowSettleModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [inputGasUrl, setInputGasUrl] = useState(gasUrl);
+  const [isTestingUrl, setIsTestingUrl] = useState(false);
+  const [testResult, setTestResult] = useState<{ status: 'success' | 'error'; message: string } | null>(null);
+
+  useEffect(() => {
+    setInputGasUrl(gasUrl);
+  }, [gasUrl]);
 
   // Sync paidBy with activeUser when activeUser changes
   useEffect(() => {
-    if (activeUser) {
+    if (activeUser && !paidBy) {
       setPaidBy(activeUser);
     }
-  }, [activeUser]);
+  }, [activeUser, paidBy]);
 
   // Derive dynamic list of users (excluding bots)
   const userSet = new Set<string>();
   if (registeredUsers && registeredUsers.length > 0) {
     registeredUsers.forEach(u => {
-      const uName = String((u as any).username || (u as any).userName || '').replace(/^@/, '').trim();
-      const fName = String((u as any).firstName || (u as any).first_name || (u as any).name || '').trim();
-      const isBot = uName.toLowerCase().includes('bot') || fName.toLowerCase().includes('bot');
-      if (isBot) return;
-
-      const name = fName || (uName ? `@${uName}` : '') || (u.userId ? `User ${u.userId}` : '');
-      if (name && name.trim()) userSet.add(name.trim());
+      let name = '';
+      if (typeof u === 'string') {
+        name = (u as string).trim();
+      } else if (u && typeof u === 'object') {
+        const uName = String((u as any).username || (u as any).userName || '').replace(/^@/, '').trim();
+        const fName = String((u as any).firstName || (u as any).first_name || (u as any).name || '').trim();
+        const isBot = uName.toLowerCase().includes('bot') || fName.toLowerCase().includes('bot');
+        if (isBot) return;
+        name = fName || (uName ? `@${uName}` : '') || (u.userId ? `User ${u.userId}` : '');
+      }
+      if (name && !name.toLowerCase().includes('bot') && name !== 'Alex' && name !== 'Sam') {
+        userSet.add(name.trim());
+      }
     });
   }
+
   expenses.forEach(e => {
     if (e.paidBy && !e.paidBy.toLowerCase().includes('bot') && e.paidBy !== 'Alex' && e.paidBy !== 'Sam') userSet.add(e.paidBy.trim());
     if (e.createdBy && !e.createdBy.toLowerCase().includes('bot') && e.createdBy !== 'Alex' && e.createdBy !== 'Sam') userSet.add(e.createdBy.trim());
@@ -330,9 +347,16 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       {/* Header */}
       <header className="flex justify-between items-center pb-2 pt-0.5">
         <h1 className="text-base font-bold tracking-tight text-[#1B1B19]">splitnest</h1>
-        <div className="text-[10px] font-mono font-medium px-2.5 py-0.5 bg-black/5 rounded-full text-[#1B1B19]/70 flex items-center space-x-1.5 border border-black/5">
-          <span className={`w-1.5 h-1.5 rounded-full ${isOnlineGas ? 'bg-[#4A6CF7] animate-pulse' : 'bg-emerald-500'}`}></span>
-          <span>v1.0 {isOnlineGas ? '• GAS' : ''}</span>
+        <div className="flex items-center space-x-2">
+          <button
+            type="button"
+            onClick={() => setShowSettingsModal(true)}
+            className="text-[10px] font-mono font-medium px-2.5 py-1 bg-black/5 hover:bg-black/10 rounded-full text-[#1B1B19]/70 flex items-center space-x-1.5 border border-black/5 transition"
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${isOnlineGas ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`}></span>
+            <span>{isOnlineGas ? 'Sheets Synced' : 'Sync Settings'}</span>
+            <Settings className="w-3 h-3 text-[#1B1B19]/60" />
+          </button>
         </div>
       </header>
 
@@ -445,7 +469,6 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             {/* Paid By Selector */}
             <div>
               <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/50 mb-1">Paid By</label>
-
               <select
                 value={paidBy}
                 onChange={e => setPaidBy(e.target.value)}
@@ -727,6 +750,143 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 className="w-full bg-[#1B1B19] hover:bg-black text-white py-2.5 rounded-xl font-semibold text-xs shadow-md transition"
               >
                 Yes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Google Apps Script & Sync Settings Modal */}
+      {showSettingsModal && (
+        <div className="absolute inset-0 bg-black/40 backdrop-blur-md z-50 p-4 flex items-center justify-center">
+          <div className="bg-[#F8F7F4] border border-black/10 rounded-[32px] p-5 w-full max-w-sm space-y-3.5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-black/5 pb-2.5">
+              <div className="flex items-center space-x-2">
+                <div className="w-7 h-7 rounded-lg bg-[#4A6CF7]/10 text-[#4A6CF7] flex items-center justify-center text-sm font-bold">
+                  ⚙️
+                </div>
+                <div>
+                  <h4 className="font-bold text-[#1B1B19] text-sm leading-tight">Google Sheets Sync</h4>
+                  <p className="text-[10px] text-[#1B1B19]/60 font-mono">Backend Connection Status</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSettingsModal(false);
+                  setTestResult(null);
+                }}
+                className="text-xs text-[#1B1B19]/50 hover:text-[#1B1B19] font-mono px-2 py-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Status indicator pill */}
+            <div className={`p-3 rounded-2xl border text-xs font-mono flex items-start space-x-2.5 ${
+              isOnlineGas 
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900' 
+                : 'bg-amber-50 border-amber-200 text-amber-900'
+            }`}>
+              <span className={`w-2.5 h-2.5 rounded-full mt-0.5 shrink-0 ${isOnlineGas ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`}></span>
+              <div className="space-y-0.5">
+                <p className="font-bold">{isOnlineGas ? '🟢 Live Sheet Connected' : '🟡 Sync Pending / Blocked'}</p>
+                <p className="text-[10px] leading-tight opacity-80">
+                  {isOnlineGas 
+                    ? 'All members and expenses in your Google Sheet are syncing automatically.' 
+                    : 'Google returned a login redirect. Verify "Execute as: Me" and "Who has access: Anyone".'}
+                </p>
+              </div>
+            </div>
+
+            {/* Web App URL field */}
+            <div className="space-y-1">
+              <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60">
+                Apps Script Web App URL
+              </label>
+              <input
+                type="url"
+                value={inputGasUrl}
+                onChange={e => setInputGasUrl(e.target.value)}
+                placeholder="https://script.google.com/macros/s/.../exec"
+                className="w-full bg-white border border-black/10 px-3 py-2 rounded-xl text-xs font-mono text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20"
+              />
+            </div>
+
+            {/* Test result message if any */}
+            {testResult && (
+              <div className={`p-2.5 rounded-xl text-xs font-mono leading-tight ${
+                testResult.status === 'success' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+              }`}>
+                {testResult.message}
+              </div>
+            )}
+
+            {/* Deployment Instructions Checklist */}
+            <div className="bg-white/60 p-3 rounded-2xl border border-black/5 text-[11px] space-y-1.5 text-[#1B1B19]/80">
+              <p className="font-bold font-mono text-[10px] uppercase text-[#1B1B19]">Troubleshooting Checklist:</p>
+              <p className="leading-snug">• <strong>Execute as</strong>: Must be <code>Me (your email)</code> (NOT "User accessing web app").</p>
+              <p className="leading-snug">• <strong>Who has access</strong>: Must be <code>Anyone</code>.</p>
+              <p className="leading-snug">• If you deployed as a <strong>New deployment</strong>, paste your new Web App URL above.</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <button
+                type="button"
+                disabled={isTestingUrl}
+                onClick={async () => {
+                  setIsTestingUrl(true);
+                  setTestResult(null);
+                  try {
+                    const cleanUrl = inputGasUrl.trim();
+                    if (!cleanUrl.startsWith('http')) {
+                      setTestResult({ status: 'error', message: 'URL must start with https://' });
+                      setIsTestingUrl(false);
+                      return;
+                    }
+                    const res = await fetch(`${cleanUrl}${cleanUrl.includes('?') ? '&' : '?'}action=get_data`);
+                    const text = await res.text();
+                    if (text.includes('accounts.google.com') || text.startsWith('<')) {
+                      setTestResult({
+                        status: 'error',
+                        message: 'Google Sign-In blocked this URL. In Apps Script, set "Execute as: Me" and "Who has access: Anyone".'
+                      });
+                    } else {
+                      const json = JSON.parse(text);
+                      if (json.status === 'success') {
+                        setGasUrl(cleanUrl);
+                        setTestResult({
+                          status: 'success',
+                          message: `Connected! Found ${(json.data?.users || []).length} users and ${(json.data?.expenses || []).length} expenses.`
+                        });
+                        setTimeout(() => {
+                          setShowSettingsModal(false);
+                          window.location.reload();
+                        }, 1200);
+                      } else {
+                        setTestResult({ status: 'error', message: json.message || 'Error fetching data' });
+                      }
+                    }
+                  } catch (err: any) {
+                    setTestResult({ status: 'error', message: `Fetch failed: ${err.message}` });
+                  } finally {
+                    setIsTestingUrl(false);
+                  }
+                }}
+                className="w-full bg-[#4A6CF7] hover:bg-[#3B5BE3] text-white py-2.5 rounded-xl font-semibold text-xs transition shadow-sm flex items-center justify-center space-x-1.5"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isTestingUrl ? 'animate-spin' : ''}`} />
+                <span>{isTestingUrl ? 'Testing...' : 'Save & Test'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSettingsModal(false);
+                  setTestResult(null);
+                }}
+                className="w-full bg-black/5 hover:bg-black/10 text-[#1B1B19] py-2.5 rounded-xl font-semibold text-xs transition"
+              >
+                Close
               </button>
             </div>
           </div>
