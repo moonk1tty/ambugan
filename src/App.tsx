@@ -248,50 +248,58 @@ export default function App() {
 
   // Sync state from local cache and trigger fresh fetch whenever chatId or gasUrl updates
   useEffect(() => {
-    if (!chatId) return;
+    const currentChatId = chatId || getChatId();
 
-    // Load local storage for this specific chatId
-    const keyExpenses = `${STORAGE_KEYS.EXPENSES}_${chatId}`;
-    const savedExp = localStorage.getItem(keyExpenses);
-    if (savedExp) {
-      try { setExpenses(JSON.parse(savedExp)); } catch (e) { setExpenses([]); }
-    } else {
-      setExpenses([]);
-    }
+    if (currentChatId) {
+      // Load local storage for this specific chatId
+      const keyExpenses = `${STORAGE_KEYS.EXPENSES}_${currentChatId}`;
+      const savedExp = localStorage.getItem(keyExpenses);
+      if (savedExp) {
+        try { setExpenses(JSON.parse(savedExp)); } catch (e) { setExpenses([]); }
+      }
 
-    const keySettlements = `${STORAGE_KEYS.SETTLEMENTS}_${chatId}`;
-    const savedSet = localStorage.getItem(keySettlements);
-    if (savedSet) {
-      try { setSettlements(JSON.parse(savedSet)); } catch (e) { setSettlements([]); }
-    } else {
-      setSettlements([]);
-    }
+      const keySettlements = `${STORAGE_KEYS.SETTLEMENTS}_${currentChatId}`;
+      const savedSet = localStorage.getItem(keySettlements);
+      if (savedSet) {
+        try { setSettlements(JSON.parse(savedSet)); } catch (e) { setSettlements([]); }
+      }
 
-    const keyUsers = `${STORAGE_KEYS.REGISTERED_USERS}_${chatId}`;
-    const savedUsers = localStorage.getItem(keyUsers);
-    if (savedUsers) {
-      try { setRegisteredUsers(JSON.parse(savedUsers)); } catch (e) { setRegisteredUsers([]); }
-    } else {
-      setRegisteredUsers([]);
-    }
+      const keyUsers = `${STORAGE_KEYS.REGISTERED_USERS}_${currentChatId}`;
+      const savedUsers = localStorage.getItem(keyUsers);
+      if (savedUsers) {
+        try { setRegisteredUsers(JSON.parse(savedUsers)); } catch (e) { setRegisteredUsers([]); }
+      }
 
-    const keyUser = `${STORAGE_KEYS.ACTIVE_USER}_${chatId}`;
-    const savedUser = localStorage.getItem(keyUser);
-    if (savedUser) {
-      setActiveUser(savedUser);
-    } else {
-      const tg = (window as any).Telegram?.WebApp;
-      if (tg?.initDataUnsafe?.user) {
-        const tgUser = tg.initDataUnsafe.user;
-        const name = tgUser.first_name || tgUser.username || `User ${tgUser.id}`;
-        setActiveUser(name);
+      const keyUser = `${STORAGE_KEYS.ACTIVE_USER}_${currentChatId}`;
+      const savedUser = localStorage.getItem(keyUser);
+      if (savedUser) {
+        setActiveUser(savedUser);
       }
     }
 
-    // Fetch fresh data from Google Apps Script endpoint for this chatId
+    // Always fetch fresh data from Google Apps Script endpoint on mount/update
     if (gasUrl) {
-      fetchGasData(gasUrl, chatId);
+      fetchGasData(gasUrl, currentChatId);
     }
+
+    // Periodically sync every 8 seconds while Mini App is open
+    const pollInterval = setInterval(() => {
+      if (gasUrl) {
+        fetchGasData(gasUrl, chatId || getChatId());
+      }
+    }, 8000);
+
+    const onFocus = () => {
+      if (gasUrl) {
+        fetchGasData(gasUrl, chatId || getChatId());
+      }
+    };
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      clearInterval(pollInterval);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [chatId, gasUrl, fetchGasData]);
 
   const handleAddExpense = async (newExp: Omit<Expense, 'id' | 'timestamp'>) => {

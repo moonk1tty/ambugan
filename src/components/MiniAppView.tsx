@@ -82,22 +82,25 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const userSet = new Set<string>();
   if (registeredUsers && registeredUsers.length > 0) {
     registeredUsers.forEach(u => {
-      const isBot = u.username?.toLowerCase().includes('bot') || u.firstName?.toLowerCase().includes('bot');
+      const uName = String((u as any).username || (u as any).userName || '').replace(/^@/, '').trim();
+      const fName = String((u as any).firstName || (u as any).first_name || (u as any).name || '').trim();
+      const isBot = uName.toLowerCase().includes('bot') || fName.toLowerCase().includes('bot');
       if (isBot) return;
-      const name = u.firstName || u.username || `User ${u.userId}`;
+
+      const name = fName || (uName ? `@${uName}` : '') || (u.userId ? `User ${u.userId}` : '');
       if (name && name.trim()) userSet.add(name.trim());
     });
   }
   expenses.forEach(e => {
-    if (e.paidBy && !e.paidBy.toLowerCase().includes('bot') && e.paidBy !== 'Alex' && e.paidBy !== 'Sam') userSet.add(e.paidBy);
-    if (e.createdBy && !e.createdBy.toLowerCase().includes('bot') && e.createdBy !== 'Alex' && e.createdBy !== 'Sam') userSet.add(e.createdBy);
+    if (e.paidBy && !e.paidBy.toLowerCase().includes('bot') && e.paidBy !== 'Alex' && e.paidBy !== 'Sam') userSet.add(e.paidBy.trim());
+    if (e.createdBy && !e.createdBy.toLowerCase().includes('bot') && e.createdBy !== 'Alex' && e.createdBy !== 'Sam') userSet.add(e.createdBy.trim());
   });
   settlements.forEach(s => {
-    if (s.payer && !s.payer.toLowerCase().includes('bot') && s.payer !== 'Alex' && s.payer !== 'Sam') userSet.add(s.payer);
-    if (s.receiver && !s.receiver.toLowerCase().includes('bot') && s.receiver !== 'Alex' && s.receiver !== 'Sam') userSet.add(s.receiver);
+    if (s.payer && !s.payer.toLowerCase().includes('bot') && s.payer !== 'Alex' && s.payer !== 'Sam') userSet.add(s.payer.trim());
+    if (s.receiver && !s.receiver.toLowerCase().includes('bot') && s.receiver !== 'Alex' && s.receiver !== 'Sam') userSet.add(s.receiver.trim());
   });
   if (activeUser && !activeUser.toLowerCase().includes('bot') && activeUser !== 'Alex' && activeUser !== 'Sam') {
-    userSet.add(activeUser);
+    userSet.add(activeUser.trim());
   }
 
   // Ensure legacy mock names Alex and Sam are not included
