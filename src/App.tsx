@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { Loader2 } from 'lucide-react';
 import { MiniAppView } from './components/MiniAppView';
 import { Expense, Settlement, RegisteredUser } from './types';
 
@@ -140,6 +141,7 @@ export default function App() {
   });
 
   const [isOnlineGas, setIsOnlineGas] = useState<boolean>(false);
+  const [isInitialLoading, setIsInitialLoading] = useState<boolean>(true);
 
   // Save to localStorage scoped by chatId when state changes
   useEffect(() => {
@@ -260,6 +262,8 @@ export default function App() {
     } catch (err) {
       console.warn('Google Apps Script fetch error:', err);
       setIsOnlineGas(false);
+    } finally {
+      setIsInitialLoading(false);
     }
   }, []);
 
@@ -300,10 +304,15 @@ export default function App() {
       }
     }
 
-    // Always fetch fresh data from Google Apps Script endpoint on mount/update
+    // Always fetch fresh data + auto-sync Telegram API members on initial mount
     if (gasUrl) {
-      fetchGasData(gasUrl, currentChatId);
+      fetchGasData(gasUrl, currentChatId, true);
     }
+
+    // Safety fallback: dismiss loading screen after 2.5s maximum even on slow mobile networks
+    const fallbackTimer = setTimeout(() => {
+      setIsInitialLoading(false);
+    }, 2500);
 
     // Periodically sync every 8 seconds while Mini App is open
     const pollInterval = setInterval(() => {
@@ -320,6 +329,7 @@ export default function App() {
     window.addEventListener('focus', onFocus);
 
     return () => {
+      clearTimeout(fallbackTimer);
       clearInterval(pollInterval);
       window.removeEventListener('focus', onFocus);
     };
@@ -421,20 +431,42 @@ export default function App() {
     <div className="min-h-screen bg-[#F8F7F4] text-[#1B1B19] font-sans flex flex-col selection:bg-[#4A6CF7] selection:text-white">
       {/* Centered Telegram Mini App View */}
       <main className="w-full max-w-[440px] mx-auto flex-1 flex flex-col">
-        <MiniAppView
-          expenses={expenses}
-          settlements={settlements}
-          registeredUsers={registeredUsers}
-          activeUser={activeUser}
-          setActiveUser={setActiveUser}
-          onAddExpense={handleAddExpense}
-          onSettleUp={handleSettleUp}
-          onSyncMembers={handleSyncMembers}
-          gasUrl={gasUrl}
-          setGasUrl={setGasUrl}
-          isOnlineGas={isOnlineGas}
-          chatId={chatId}
-        />
+        {isInitialLoading ? (
+          <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-4">
+            <div className="relative">
+              <div className="w-14 h-14 rounded-2xl bg-[#1B1B19] text-white flex items-center justify-center shadow-md">
+                <span className="font-bold font-mono text-xl tracking-tight">sn</span>
+              </div>
+              <div className="absolute -bottom-1 -right-1 bg-white p-1 rounded-full shadow-sm">
+                <Loader2 className="w-4 h-4 text-[#4A6CF7] animate-spin" />
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <h2 className="text-lg font-bold tracking-tight text-[#1B1B19]">splitnest</h2>
+              <p className="text-xs text-[#1B1B19]/60 font-mono">Syncing Telegram group & ledger...</p>
+            </div>
+
+            <div className="w-32 h-1 bg-black/5 rounded-full overflow-hidden">
+              <div className="w-full h-full bg-[#1B1B19] rounded-full animate-pulse"></div>
+            </div>
+          </div>
+        ) : (
+          <MiniAppView
+            expenses={expenses}
+            settlements={settlements}
+            registeredUsers={registeredUsers}
+            activeUser={activeUser}
+            setActiveUser={setActiveUser}
+            onAddExpense={handleAddExpense}
+            onSettleUp={handleSettleUp}
+            onSyncMembers={handleSyncMembers}
+            gasUrl={gasUrl}
+            setGasUrl={setGasUrl}
+            isOnlineGas={isOnlineGas}
+            chatId={chatId}
+          />
+        )}
       </main>
     </div>
   );
