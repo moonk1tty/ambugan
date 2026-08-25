@@ -277,20 +277,29 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
   const otherUser = availableUsers.find(u => u !== paidBy) || (availableUsers.length > 1 ? availableUsers[1] : 'Group');
 
+  // Helper to parse numbers safely with commas and spaces removed
+  const parseCleanNumber = (val: string | number | undefined | null): number => {
+    if (val === undefined || val === null || val === '') return 0;
+    if (typeof val === 'number') return isNaN(val) ? 0 : val;
+    const cleaned = String(val).replace(/,/g, '').trim();
+    const num = parseFloat(cleaned);
+    return isNaN(num) ? 0 : num;
+  };
+
   // Auto-initialize multi-member shares when switching split modes or changing members
   const handleSplitModeChange = (mode: 'Equal' | '50/50 Equal' | 'Exact Amounts' | 'Percentages' | 'Single Payer (100% owed)') => {
     setSplitMode(mode);
     if (mode === 'Exact Amounts') {
-      const numAmt = parseFloat(amount) || 0;
+      const numAmt = parseCleanNumber(amount);
       const initial: Record<string, string> = {};
       if (numAmt > 0 && availableUsers.length > 0) {
-        const perPerson = (numAmt / availableUsers.length).toFixed(2);
+        const perPerson = formatAmount(numAmt / availableUsers.length);
         availableUsers.forEach(u => {
-          initial[u] = exactShares[u] || perPerson;
+          initial[u] = exactShares[u] ? formatAmount(parseCleanNumber(exactShares[u])) : perPerson;
         });
       } else {
         availableUsers.forEach(u => {
-          initial[u] = exactShares[u] || '';
+          initial[u] = exactShares[u] ? formatAmount(parseCleanNumber(exactShares[u])) : '';
         });
       }
       setExactShares(initial);
@@ -312,9 +321,9 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   };
 
   const handleDistributeExactEvenly = () => {
-    const numAmt = parseFloat(amount) || 0;
+    const numAmt = parseCleanNumber(amount);
     if (availableUsers.length === 0) return;
-    const share = (numAmt / availableUsers.length).toFixed(2);
+    const share = formatAmount(numAmt / availableUsers.length);
     const updated: Record<string, string> = {};
     availableUsers.forEach(u => { updated[u] = share; });
     setExactShares(updated);
@@ -450,9 +459,9 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
   const handleSingleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!description.trim() || !amount || Number(amount) <= 0) return;
+    const numAmt = parseCleanNumber(amount);
+    if (!description.trim() || numAmt <= 0) return;
 
-    const numAmt = parseFloat(amount);
     let finalShares: Record<string, number> | undefined = undefined;
     let finalPercentages: Record<string, number> | undefined = undefined;
     let finalSingleOwer: string | undefined = undefined;
@@ -460,12 +469,12 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     if (splitMode === 'Exact Amounts') {
       finalShares = {};
       availableUsers.forEach(u => {
-        finalShares![u] = parseFloat(exactShares[u] || '0') || 0;
+        finalShares![u] = parseCleanNumber(exactShares[u]);
       });
     } else if (splitMode === 'Percentages') {
       finalPercentages = {};
       availableUsers.forEach(u => {
-        finalPercentages![u] = parseFloat(percentShares[u] || '0') || 0;
+        finalPercentages![u] = parseCleanNumber(percentShares[u]);
       });
     } else if (splitMode === 'Single Payer (100% owed)') {
       finalSingleOwer = singleDebtor || availableUsers.find(u => u !== paidBy) || availableUsers[0];
@@ -488,14 +497,14 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     };
 
     const savedDesc = description.trim();
-    const savedAmt = amount;
+    const savedAmt = numAmt;
     const savedCurr = currency;
 
     setActionLoading({
       active: true,
       success: false,
       title: 'Logging Expense...',
-      subtitle: `Syncing ${savedCurr}${savedAmt} to shared ledger & updating balances...`
+      subtitle: `Syncing ${savedCurr}${formatAmount(savedAmt)} to shared ledger & updating balances...`
     });
 
     const startTime = Date.now();
@@ -520,7 +529,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       setExactShares({});
       setPercentShares({});
       setActionLoading({ active: false, success: false, title: '', subtitle: '' });
-      setToastMessage(`Logged "${savedCurr}${savedAmt} ${savedDesc}"`);
+      setToastMessage(`Logged "${savedCurr}${formatAmount(savedAmt)} ${savedDesc}"`);
       setShowSuccessToast(true);
       setTimeout(() => setShowSuccessToast(false), 3000);
     }
@@ -541,13 +550,13 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   // Individual Settle Up Handlers
   const handleOpenIndividualSettle = (debt: { debtor: string; creditor: string; amount: number; currency: string }) => {
     setSelectedDebtToSettle(debt);
-    setSettleAmount(String(debt.amount));
+    setSettleAmount(formatAmount(debt.amount));
     setSettleMethod('Cash');
   };
 
   const handleConfirmIndividualSettle = async () => {
     if (!selectedDebtToSettle) return;
-    const amt = parseFloat(settleAmount) || selectedDebtToSettle.amount;
+    const amt = parseCleanNumber(settleAmount) || selectedDebtToSettle.amount;
     if (amt <= 0) return;
 
     const debtor = selectedDebtToSettle.debtor;
@@ -774,13 +783,17 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 <input
                   type="text"
                   inputMode="decimal"
-                  pattern="[0-9]*[.,]?[0-9]*"
                   placeholder="0.00"
                   value={amount}
                   onChange={e => {
                     const val = e.target.value;
-                    if (val === '' || /^\d*(\.|\,)?\d*$/.test(val)) {
-                      setAmount(val.replace(/,/g, '.'));
+                    if (val === '' || /^[0-9.,]*$/.test(val)) {
+                      setAmount(val);
+                    }
+                  }}
+                  onBlur={() => {
+                    if (amount && parseCleanNumber(amount) > 0) {
+                      setAmount(formatAmount(parseCleanNumber(amount)));
                     }
                   }}
                   required
@@ -854,7 +867,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/50">Split</label>
                 {(splitMode === 'Equal' || splitMode === '50/50 Equal') && availableUsers.length > 0 && (
                   <span className="text-[10px] font-mono text-[#1B1B19]/60 font-semibold">
-                    {availableUsers.length} members ({amount && Number(amount) > 0 ? `${currency}${formatAmount(Number(amount) / availableUsers.length)} each` : 'divided equally'})
+                    {availableUsers.length} members ({parseCleanNumber(amount) > 0 ? `${currency}${formatAmount(parseCleanNumber(amount) / availableUsers.length)} each` : 'divided equally'})
                   </span>
                 )}
               </div>
@@ -887,15 +900,15 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 <div className="flex justify-between items-center text-[10px] font-mono text-[#1B1B19]/60 uppercase font-semibold">
                   <span>Equal Share ({availableUsers.length} members)</span>
                   <span>
-                    {amount && Number(amount) > 0 
-                      ? `${currency}${formatAmount(Number(amount) / availableUsers.length)} / person` 
+                    {parseCleanNumber(amount) > 0 
+                      ? `${currency}${formatAmount(parseCleanNumber(amount) / availableUsers.length)} / person` 
                       : 'Enter amount above'}
                   </span>
                 </div>
                 <div className="flex flex-wrap gap-1">
                   {availableUsers.map(u => {
-                    const share = amount && Number(amount) > 0 
-                      ? formatAmount(Number(amount) / availableUsers.length) 
+                    const share = parseCleanNumber(amount) > 0 
+                      ? formatAmount(parseCleanNumber(amount) / availableUsers.length) 
                       : '0.00';
                     const isPayer = u === (paidBy || activeUser);
                     return (
@@ -943,13 +956,18 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                         <input
                           type="text"
                           inputMode="decimal"
-                          pattern="[0-9]*[.,]?[0-9]*"
                           placeholder="0.00"
                           value={exactShares[u] ?? ''}
                           onChange={e => {
                             const val = e.target.value;
-                            if (val === '' || /^\d*(\.|\,)?\d*$/.test(val)) {
-                              setExactShares(prev => ({ ...prev, [u]: val.replace(/,/g, '.') }));
+                            if (val === '' || /^[0-9.,]*$/.test(val)) {
+                              setExactShares(prev => ({ ...prev, [u]: val }));
+                            }
+                          }}
+                          onBlur={() => {
+                            const val = exactShares[u];
+                            if (val && parseCleanNumber(val) > 0) {
+                              setExactShares(prev => ({ ...prev, [u]: formatAmount(parseCleanNumber(val)) }));
                             }
                           }}
                           className="w-full bg-white border border-black/10 rounded-lg px-2 py-1 text-xs font-mono font-bold text-[#1B1B19] focus:outline-none focus:ring-1 focus:ring-[#1B1B19]"
@@ -961,8 +979,8 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
                 {/* Total Allocation Check */}
                 {(() => {
-                  const numAmt = parseFloat(amount) || 0;
-                  const totalAllocated = availableUsers.reduce((sum, u) => sum + (parseFloat(exactShares[u] || '0') || 0), 0);
+                  const numAmt = parseCleanNumber(amount);
+                  const totalAllocated = availableUsers.reduce((sum, u) => sum + parseCleanNumber(exactShares[u]), 0);
                   const diff = numAmt - totalAllocated;
                   const isMatch = Math.abs(diff) < 0.01;
 
@@ -1001,27 +1019,26 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 <div className="grid grid-cols-2 gap-2">
                   {availableUsers.map(u => {
                     const isPayer = u === (paidBy || activeUser);
-                    const pct = parseFloat(percentShares[u] || '0') || 0;
-                    const numAmt = parseFloat(amount) || 0;
+                    const pct = parseCleanNumber(percentShares[u]);
+                    const numAmt = parseCleanNumber(amount);
                     const calcAmount = numAmt > 0 ? formatAmount((numAmt * pct) / 100) : '0.00';
 
                     return (
                       <div key={u} className="bg-white/70 p-2 rounded-xl border border-black/5 space-y-1">
                         <div className="flex justify-between items-center text-[10px] font-mono text-[#1B1B19]/70">
                           <span className="truncate font-semibold max-w-[70px]">{isPayer ? `${u} (Payer)` : u}</span>
-                          <span className="text-[#1B1B19]/50">{currency}{calcAmount}</span>
+                          <span className="text-[#1B1B19]/50 font-mono font-semibold">{currency}{calcAmount}</span>
                         </div>
                         <div className="flex items-center gap-1">
                           <input
                             type="text"
                             inputMode="decimal"
-                            pattern="[0-9]*[.,]?[0-9]*"
                             placeholder="0"
                             value={percentShares[u] ?? ''}
                             onChange={e => {
                               const val = e.target.value;
-                              if (val === '' || /^\d*(\.|\,)?\d*$/.test(val)) {
-                                setPercentShares(prev => ({ ...prev, [u]: val.replace(/,/g, '.') }));
+                              if (val === '' || /^[0-9.,]*$/.test(val)) {
+                                setPercentShares(prev => ({ ...prev, [u]: val }));
                               }
                             }}
                             className="w-full bg-white border border-black/10 rounded-lg px-2 py-1 text-xs font-mono font-bold text-[#1B1B19] focus:outline-none focus:ring-1 focus:ring-[#1B1B19]"
@@ -1035,7 +1052,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
                 {/* Total % Check */}
                 {(() => {
-                  const totalPct = availableUsers.reduce((sum, u) => sum + (parseFloat(percentShares[u] || '0') || 0), 0);
+                  const totalPct = availableUsers.reduce((sum, u) => sum + parseCleanNumber(percentShares[u]), 0);
                   const isMatch = Math.abs(totalPct - 100) < 0.1;
 
                   return (
@@ -1069,15 +1086,15 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                         key={u}
                         type="button"
                         onClick={() => setSingleDebtor(u)}
-                        className={`p-2 rounded-xl text-left border transition ${
+                        className={`p-2.5 rounded-xl text-left border transition ${
                           isSelected
                             ? 'bg-[#1B1B19] text-white border-[#1B1B19] shadow-sm'
                             : 'bg-white/70 border-black/5 text-[#1B1B19]/80 hover:bg-white'
                         }`}
                       >
                         <p className="font-semibold text-xs truncate">{u} {isPayer ? '(Payer)' : ''}</p>
-                        <p className={`text-[10px] font-mono ${isSelected ? 'text-white/70' : 'text-[#1B1B19]/50'}`}>
-                          Owes {currency}{amount || '0.00'}
+                        <p className={`text-[10px] font-mono font-bold mt-0.5 ${isSelected ? 'text-white/90' : 'text-[#1B1B19]/60'}`}>
+                          Owes {currency}{parseCleanNumber(amount) > 0 ? formatAmount(parseCleanNumber(amount)) : '0.00'}
                         </p>
                       </button>
                     );
@@ -1091,7 +1108,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
               className="w-full bg-[#1B1B19] hover:bg-black text-white font-semibold py-3.5 rounded-2xl text-sm transition shadow-md active:scale-[0.99] flex items-center justify-center space-x-2 mt-2"
             >
               <Send className="w-4 h-4" />
-              <span>Submit Entry ({currency})</span>
+              <span>Submit Entry ({currency}{parseCleanNumber(amount) > 0 ? ` ${formatAmount(parseCleanNumber(amount))}` : ''})</span>
             </button>
           </form>
         )}
@@ -1313,12 +1330,16 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
               <input
                 type="text"
                 inputMode="decimal"
-                pattern="[0-9]*[.,]?[0-9]*"
                 value={settleAmount}
                 onChange={e => {
                   const val = e.target.value;
-                  if (val === '' || /^\d*(\.|\,)?\d*$/.test(val)) {
-                    setSettleAmount(val.replace(/,/g, '.'));
+                  if (val === '' || /^[0-9.,]*$/.test(val)) {
+                    setSettleAmount(val);
+                  }
+                }}
+                onBlur={() => {
+                  if (settleAmount && parseCleanNumber(settleAmount) > 0) {
+                    setSettleAmount(formatAmount(parseCleanNumber(settleAmount)));
                   }
                 }}
                 required
