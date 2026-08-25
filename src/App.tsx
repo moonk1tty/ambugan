@@ -143,13 +143,14 @@ export default function App() {
   const [isOnlineGas, setIsOnlineGas] = useState<boolean>(true);
   const [isInitialLoading, setIsInitialLoading] = useState<boolean>(true);
   const [loadingStage, setLoadingStage] = useState<number>(0);
+  const [showManualContinue, setShowManualContinue] = useState<boolean>(false);
 
   // Progressive loading messages to keep user engaged while Telegram API & Sheets sync
   const loadingSteps = [
     'Connecting to Telegram group...',
     'Syncing group members & permissions...',
     'Loading shared ledger & balances...',
-    'Ready!'
+    'Finalizing member roster...'
   ];
 
   useEffect(() => {
@@ -159,8 +160,20 @@ export default function App() {
         if (prev < loadingSteps.length - 1) return prev + 1;
         return prev;
       });
-    }, 450);
+    }, 600);
     return () => clearInterval(interval);
+  }, [isInitialLoading]);
+
+  // Show a manual bypass option after 6 seconds only if still stuck on <= 1 member
+  useEffect(() => {
+    if (!isInitialLoading) {
+      setShowManualContinue(false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setShowManualContinue(true);
+    }, 6000);
+    return () => clearTimeout(timer);
   }, [isInitialLoading]);
 
   // Save to localStorage scoped by chatId when state changes
@@ -273,25 +286,39 @@ export default function App() {
         setExpenses(fetchedExpenses);
         setSettlements(fetchedSettlements);
         setRegisteredUsers(fetchedUsers);
+
+        // If we got more than 1 member or have completed member sync, dismiss loader
+        if (fetchedUsers.length > 1 || !forceMemberSync) {
+          setIsInitialLoading(false);
+        }
       } else if (result.status === 'success' && Array.isArray(result.users)) {
         setIsOnlineGas(true);
         setRegisteredUsers(result.users);
+        if (result.users.length > 1 || !forceMemberSync) {
+          setIsInitialLoading(false);
+        }
       } else {
         setIsOnlineGas(false);
       }
     } catch (err) {
       console.warn('Google Apps Script fetch error:', err);
       setIsOnlineGas(false);
-    } finally {
-      setIsInitialLoading(false);
     }
   }, []);
+
+  // Dismiss loader automatically as soon as registeredUsers has > 1 member
+  useEffect(() => {
+    if (registeredUsers && registeredUsers.length > 1 && isInitialLoading) {
+      setIsInitialLoading(false);
+    }
+  }, [registeredUsers, isInitialLoading]);
 
   // Sync state from local cache and trigger fresh fetch whenever chatId or gasUrl updates
   useEffect(() => {
     const currentChatId = chatId || getChatId();
 
     let savedUsersRaw: string | null = null;
+    let cachedMemberCount = 0;
 
     if (currentChatId) {
       // Load local storage for this specific chatId (reset previous group's data to prevent cross-group leakage)
@@ -314,7 +341,15 @@ export default function App() {
       const keyUsers = `${STORAGE_KEYS.REGISTERED_USERS}_${currentChatId}`;
       savedUsersRaw = localStorage.getItem(keyUsers);
       if (savedUsersRaw) {
-        try { setRegisteredUsers(JSON.parse(savedUsersRaw)); } catch (e) { setRegisteredUsers([]); }
+        try { 
+          const parsed = JSON.parse(savedUsersRaw);
+          if (Array.isArray(parsed)) {
+            setRegisteredUsers(parsed);
+            cachedMemberCount = parsed.length;
+          }
+        } catch (e) { 
+          setRegisteredUsers([]); 
+        }
       } else {
         setRegisteredUsers([]);
       }
@@ -326,25 +361,23 @@ export default function App() {
       }
     }
 
-    // If group has 0 or 1 known member, force Telegram member discovery on mount
-    const hasFewUsers = !savedUsersRaw || (function() {
-      try {
-        const parsed = JSON.parse(savedUsersRaw);
-        return !Array.isArray(parsed) || parsed.length <= 1;
-      } catch {
-        return true;
-      }
-    })();
+    // If group has > 1 member in local cache, we can dismiss loader promptly
+    if (cachedMemberCount > 1) {
+      setTimeout(() => setIsInitialLoading(false), 800);
+    }
+
+    // Force live Telegram member sync if group has <= 1 member
+    const needsMemberSync = cachedMemberCount <= 1;
 
     // Fetch fresh data on initial mount
     if (gasUrl) {
-      fetchGasData(gasUrl, currentChatId, hasFewUsers);
+      fetchGasData(gasUrl, currentChatId, needsMemberSync);
     }
 
-    // Smooth transition: dismiss loading screen after 1.8s once steps complete
+    // Safety fallback: if after 7.5s we still only have 1 member (e.g. 1-person solo chat), dismiss loader
     const fallbackTimer = setTimeout(() => {
       setIsInitialLoading(false);
-    }, 1800);
+    }, 7500);
 
     // Periodically sync every 8 seconds while Mini App is open
     const pollInterval = setInterval(() => {
@@ -579,6 +612,16 @@ export default function App() {
                 <span>{Math.min(100, Math.round(((loadingStage + 1) / loadingSteps.length) * 100))}%</span>
               </div>
             </div>
+
+            {showManualContinue && (
+              <button
+                type="button"
+                onClick={() => setIsInitialLoading(false)}
+                className="mt-2 text-xs font-mono text-[#4A6CF7] hover:underline underline-offset-4 animate-in fade-in duration-300"
+              >
+                Continue to Mini App →
+              </button>
+            )}
           </div>
         ) : (
           <MiniAppView
