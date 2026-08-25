@@ -141,16 +141,27 @@ export default function App() {
   });
 
   const [isOnlineGas, setIsOnlineGas] = useState<boolean>(true);
-  // Instant-Open (Stale-While-Revalidate):
-  // If we already have cached data in localStorage for this group, display it IMMEDIATELY without blocking the user!
-  const [isInitialLoading, setIsInitialLoading] = useState<boolean>(() => {
-    const initialChatId = getChatId();
-    if (!initialChatId) return false;
-    const cachedUsers = localStorage.getItem(`${STORAGE_KEYS.REGISTERED_USERS}_${initialChatId}`);
-    const cachedExp = localStorage.getItem(`${STORAGE_KEYS.EXPENSES}_${initialChatId}`);
-    // If local cache exists, skip full screen loader entirely
-    return !(cachedUsers || cachedExp);
-  });
+  const [isInitialLoading, setIsInitialLoading] = useState<boolean>(true);
+  const [loadingStage, setLoadingStage] = useState<number>(0);
+
+  // Progressive loading messages to keep user engaged while Telegram API & Sheets sync
+  const loadingSteps = [
+    'Connecting to Telegram group...',
+    'Syncing group members & permissions...',
+    'Loading shared ledger & balances...',
+    'Ready!'
+  ];
+
+  useEffect(() => {
+    if (!isInitialLoading) return;
+    const interval = setInterval(() => {
+      setLoadingStage(prev => {
+        if (prev < loadingSteps.length - 1) return prev + 1;
+        return prev;
+      });
+    }, 450);
+    return () => clearInterval(interval);
+  }, [isInitialLoading]);
 
   // Save to localStorage scoped by chatId when state changes
   useEffect(() => {
@@ -280,6 +291,8 @@ export default function App() {
   useEffect(() => {
     const currentChatId = chatId || getChatId();
 
+    let savedUsersRaw: string | null = null;
+
     if (currentChatId) {
       // Load local storage for this specific chatId (reset previous group's data to prevent cross-group leakage)
       const keyExpenses = `${STORAGE_KEYS.EXPENSES}_${currentChatId}`;
@@ -299,9 +312,9 @@ export default function App() {
       }
 
       const keyUsers = `${STORAGE_KEYS.REGISTERED_USERS}_${currentChatId}`;
-      const savedUsers = localStorage.getItem(keyUsers);
-      if (savedUsers) {
-        try { setRegisteredUsers(JSON.parse(savedUsers)); } catch (e) { setRegisteredUsers([]); }
+      savedUsersRaw = localStorage.getItem(keyUsers);
+      if (savedUsersRaw) {
+        try { setRegisteredUsers(JSON.parse(savedUsersRaw)); } catch (e) { setRegisteredUsers([]); }
       } else {
         setRegisteredUsers([]);
       }
@@ -313,15 +326,25 @@ export default function App() {
       }
     }
 
-    // Fetch fresh data in background on initial mount (uses fast get_data which reads cached members)
+    // If group has 0 or 1 known member, force Telegram member discovery on mount
+    const hasFewUsers = !savedUsersRaw || (function() {
+      try {
+        const parsed = JSON.parse(savedUsersRaw);
+        return !Array.isArray(parsed) || parsed.length <= 1;
+      } catch {
+        return true;
+      }
+    })();
+
+    // Fetch fresh data on initial mount
     if (gasUrl) {
-      fetchGasData(gasUrl, currentChatId, false);
+      fetchGasData(gasUrl, currentChatId, hasFewUsers);
     }
 
-    // Safety fallback: dismiss loading screen after 1.2s maximum even on slow mobile networks
+    // Smooth transition: dismiss loading screen after 1.8s once steps complete
     const fallbackTimer = setTimeout(() => {
       setIsInitialLoading(false);
-    }, 1200);
+    }, 1800);
 
     // Periodically sync every 8 seconds while Mini App is open
     const pollInterval = setInterval(() => {
@@ -351,13 +374,17 @@ export default function App() {
       timestamp: new Date().toISOString()
     };
 
-    // Optimistic local state update
-    setExpenses(prev => [created, ...prev]);
+    // Optimistic local state and localStorage update
+    const updatedExpenses = [created, ...expenses];
+    setExpenses(updatedExpenses);
+    try {
+      localStorage.setItem(`splitnest_expenses_${chatId || 'default'}`, JSON.stringify(updatedExpenses));
+    } catch (e) {}
 
     // Send to GAS backend if URL is configured
     if (gasUrl && gasUrl.startsWith('http')) {
       try {
-        const chatId = getChatId();
+        const currentChatId = chatId || getChatId();
         const tg = (window as any).Telegram?.WebApp;
         const tgUser = tg?.initDataUnsafe?.user;
 
@@ -367,7 +394,7 @@ export default function App() {
           body: JSON.stringify({
             action: 'add_expense',
             expense: created,
-            chatId: chatId,
+            chatId: currentChatId,
             user: tgUser
           })
         });
@@ -376,9 +403,21 @@ export default function App() {
           setIsOnlineGas(true);
           if (Array.isArray(result.data.expenses)) {
             setExpenses(result.data.expenses);
+            try {
+              localStorage.setItem(`splitnest_expenses_${currentChatId || 'default'}`, JSON.stringify(result.data.expenses));
+            } catch (e) {}
+          }
+          if (Array.isArray(result.data.settlements)) {
+            setSettlements(result.data.settlements);
+            try {
+              localStorage.setItem(`splitnest_settlements_${currentChatId || 'default'}`, JSON.stringify(result.data.settlements));
+            } catch (e) {}
           }
           if (Array.isArray(result.data.users)) {
             setRegisteredUsers(result.data.users);
+            try {
+              localStorage.setItem(`splitnest_users_${currentChatId || 'default'}`, JSON.stringify(result.data.users));
+            } catch (e) {}
           }
         }
       } catch (err) {
@@ -394,13 +433,17 @@ export default function App() {
       timestamp: new Date().toISOString()
     };
 
-    // Optimistic local state update
-    setSettlements(prev => [created, ...prev]);
+    // Optimistic local state and localStorage update
+    const updatedSettlements = [created, ...settlements];
+    setSettlements(updatedSettlements);
+    try {
+      localStorage.setItem(`splitnest_settlements_${chatId || 'default'}`, JSON.stringify(updatedSettlements));
+    } catch (e) {}
 
     // Send to GAS backend if URL is configured
     if (gasUrl && gasUrl.startsWith('http')) {
       try {
-        const chatId = getChatId();
+        const currentChatId = chatId || getChatId();
         const tg = (window as any).Telegram?.WebApp;
         const tgUser = tg?.initDataUnsafe?.user;
 
@@ -410,7 +453,7 @@ export default function App() {
           body: JSON.stringify({
             action: 'settle_up',
             settlement: created,
-            chatId: chatId,
+            chatId: currentChatId,
             user: tgUser
           })
         });
@@ -419,9 +462,21 @@ export default function App() {
           setIsOnlineGas(true);
           if (Array.isArray(result.data.settlements)) {
             setSettlements(result.data.settlements);
+            try {
+              localStorage.setItem(`splitnest_settlements_${currentChatId || 'default'}`, JSON.stringify(result.data.settlements));
+            } catch (e) {}
+          }
+          if (Array.isArray(result.data.expenses)) {
+            setExpenses(result.data.expenses);
+            try {
+              localStorage.setItem(`splitnest_expenses_${currentChatId || 'default'}`, JSON.stringify(result.data.expenses));
+            } catch (e) {}
           }
           if (Array.isArray(result.data.users)) {
             setRegisteredUsers(result.data.users);
+            try {
+              localStorage.setItem(`splitnest_users_${currentChatId || 'default'}`, JSON.stringify(result.data.users));
+            } catch (e) {}
           }
         }
       } catch (err) {
@@ -442,22 +497,21 @@ export default function App() {
     const targetLower = cleanTarget.toLowerCase().replace(/^@/, '');
 
     // 1. Optimistic local state update
-    setRegisteredUsers(prev => prev.filter(u => {
+    const updatedUsers = registeredUsers.filter(u => {
       const uName = (u.username || '').toLowerCase().replace(/^@/, '');
       const fName = (u.firstName || u.name || '').toLowerCase();
       const uId = String(u.userId || '').toLowerCase();
       return uName !== targetLower && fName !== targetLower && uId !== targetLower;
-    }));
+    });
+    setRegisteredUsers(updatedUsers);
+    try {
+      localStorage.setItem(`splitnest_users_${chatId || 'default'}`, JSON.stringify(updatedUsers));
+    } catch (e) {}
 
     // If the active viewing user was the one removed, select another remaining member
     if (activeUser.toLowerCase().replace(/^@/, '') === targetLower) {
-      const remaining = registeredUsers.filter(u => {
-        const uName = (u.username || '').toLowerCase().replace(/^@/, '');
-        const fName = (u.firstName || u.name || '').toLowerCase();
-        return uName !== targetLower && fName !== targetLower;
-      });
-      if (remaining.length > 0) {
-        setActiveUser(remaining[0].firstName || remaining[0].username || remaining[0].name || 'User');
+      if (updatedUsers.length > 0) {
+        setActiveUser(updatedUsers[0].firstName || updatedUsers[0].username || updatedUsers[0].name || 'User');
       }
     }
 
@@ -480,6 +534,9 @@ export default function App() {
           setIsOnlineGas(true);
           if (Array.isArray(result.data.users)) {
             setRegisteredUsers(result.data.users);
+            try {
+              localStorage.setItem(`splitnest_users_${currentChatId || 'default'}`, JSON.stringify(result.data.users));
+            } catch (e) {}
           }
         }
       } catch (err) {
@@ -493,23 +550,34 @@ export default function App() {
       {/* Centered Telegram Mini App View */}
       <main className="w-full max-w-[440px] mx-auto flex-1 flex flex-col">
         {isInitialLoading ? (
-          <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-4">
+          <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-5 animate-in fade-in duration-300">
             <div className="relative">
-              <div className="w-14 h-14 rounded-2xl bg-[#1B1B19] text-white flex items-center justify-center shadow-md">
-                <span className="font-bold font-mono text-xl tracking-tight">sn</span>
+              <div className="w-16 h-16 rounded-2xl bg-[#1B1B19] text-white flex items-center justify-center shadow-lg transform transition-transform duration-300 hover:scale-105">
+                <span className="font-bold font-mono text-2xl tracking-tight">sn</span>
               </div>
-              <div className="absolute -bottom-1 -right-1 bg-white p-1 rounded-full shadow-sm">
+              <div className="absolute -bottom-1 -right-1 bg-white p-1.5 rounded-full shadow-md border border-black/5">
                 <Loader2 className="w-4 h-4 text-[#4A6CF7] animate-spin" />
               </div>
             </div>
 
-            <div className="space-y-1">
-              <h2 className="text-lg font-bold tracking-tight text-[#1B1B19]">splitnest</h2>
-              <p className="text-xs text-[#1B1B19]/60 font-mono">Syncing Telegram group & ledger...</p>
+            <div className="space-y-1.5 max-w-xs">
+              <h2 className="text-xl font-bold tracking-tight text-[#1B1B19]">splitnest</h2>
+              <p className="text-xs text-[#1B1B19]/70 font-mono transition-all duration-300 min-h-[1.25rem]">
+                {loadingSteps[loadingStage] || 'Syncing Telegram ledger...'}
+              </p>
             </div>
 
-            <div className="w-32 h-1 bg-black/5 rounded-full overflow-hidden">
-              <div className="w-full h-full bg-[#1B1B19] rounded-full animate-pulse"></div>
+            <div className="w-44 space-y-1.5">
+              <div className="h-1.5 bg-black/5 rounded-full overflow-hidden p-0.5">
+                <div 
+                  className="h-full bg-[#1B1B19] rounded-full transition-all duration-500 ease-out"
+                  style={{ width: `${Math.min(100, Math.max(15, ((loadingStage + 1) / loadingSteps.length) * 100))}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-[10px] text-[#1B1B19]/40 font-mono">
+                <span>Telegram Sync</span>
+                <span>{Math.min(100, Math.round(((loadingStage + 1) / loadingSteps.length) * 100))}%</span>
+              </div>
             </div>
           </div>
         ) : (

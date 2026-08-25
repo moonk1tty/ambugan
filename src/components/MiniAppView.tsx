@@ -24,8 +24,8 @@ interface MiniAppViewProps {
   registeredUsers?: RegisteredUser[];
   activeUser: string;
   setActiveUser: (user: string) => void;
-  onAddExpense: (expense: Omit<Expense, 'id' | 'timestamp'>) => void;
-  onSettleUp: (settlement: Omit<Settlement, 'id' | 'timestamp'>) => void;
+  onAddExpense: (expense: Omit<Expense, 'id' | 'timestamp'>) => Promise<void> | void;
+  onSettleUp: (settlement: Omit<Settlement, 'id' | 'timestamp'>) => Promise<void> | void;
   onSyncMembers?: () => Promise<void> | void;
   onRemoveMember?: (memberName: string) => Promise<void> | void;
   gasUrl: string;
@@ -98,6 +98,19 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [isTestingUrl, setIsTestingUrl] = useState(false);
   const [testResult, setTestResult] = useState<{ status: 'success' | 'error'; message: string } | null>(null);
 
+  // Global Action Processing Loader State
+  const [actionLoading, setActionLoading] = useState<{
+    active: boolean;
+    success: boolean;
+    title: string;
+    subtitle: string;
+  }>({
+    active: false,
+    success: false,
+    title: '',
+    subtitle: ''
+  });
+
   // Persistent tracking of manually removed members for this group
   const removedStorageKey = `splitnest_removed_members_${chatId || 'default'}`;
   const [removedMembers, setRemovedMembers] = useState<string[]>(() => {
@@ -112,8 +125,17 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const handleConfirmRemoveMember = async (memberName: string) => {
     if (!memberName) return;
     setIsRemovingMember(true);
+    const cleanTarget = memberName.trim();
+
+    setActionLoading({
+      active: true,
+      success: false,
+      title: 'Updating Group Members...',
+      subtitle: `Removing ${cleanTarget} and updating ledger...`
+    });
+
+    const startTime = Date.now();
     try {
-      const cleanTarget = memberName.trim();
       const updatedRemoved = Array.from(new Set([...removedMembers, cleanTarget]));
       setRemovedMembers(updatedRemoved);
       try {
@@ -131,6 +153,17 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       if (onRemoveMember) {
         await onRemoveMember(cleanTarget);
       }
+      const elapsed = Date.now() - startTime;
+      if (elapsed < 500) {
+        await new Promise(r => setTimeout(r, 500 - elapsed));
+      }
+      setActionLoading({
+        active: true,
+        success: true,
+        title: 'Member Removed',
+        subtitle: `${cleanTarget} removed from active roster.`
+      });
+      await new Promise(r => setTimeout(r, 550));
       setMemberToRemove(null);
       setRemoveToast(`Removed ${cleanTarget} from group ledger.`);
       setTimeout(() => setRemoveToast(null), 3500);
@@ -138,6 +171,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       console.error('Failed to remove member:', err);
     } finally {
       setIsRemovingMember(false);
+      setActionLoading({ active: false, success: false, title: '', subtitle: '' });
     }
   };
 
@@ -415,7 +449,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const currencyBalances = calculateCurrencyBalances();
   const activeBalances = currencyBalances.filter(cb => cb.amount >= 0.01);
 
-  const handleSingleSubmit = (e: React.FormEvent) => {
+  const handleSingleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!description.trim() || !amount || Number(amount) <= 0) return;
 
@@ -438,7 +472,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       finalSingleOwer = singleDebtor || availableUsers.find(u => u !== paidBy) || availableUsers[0];
     }
 
-    onAddExpense({
+    const payload = {
       description: description.trim(),
       amount: numAmt,
       currency,
@@ -453,15 +487,45 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       singleOwer: finalSingleOwer,
       createdBy: activeUser,
       category
+    };
+
+    const savedDesc = description.trim();
+    const savedAmt = amount;
+    const savedCurr = currency;
+
+    setActionLoading({
+      active: true,
+      success: false,
+      title: 'Logging Expense...',
+      subtitle: `Syncing ${savedCurr}${savedAmt} to shared ledger & updating balances...`
     });
 
-    setDescription('');
-    setAmount('');
-    setExactShares({});
-    setPercentShares({});
-    setToastMessage(`Logged "${currency}${amount} ${description}"`);
-    setShowSuccessToast(true);
-    setTimeout(() => setShowSuccessToast(false), 3000);
+    const startTime = Date.now();
+    try {
+      await onAddExpense(payload);
+      const elapsed = Date.now() - startTime;
+      if (elapsed < 500) {
+        await new Promise(r => setTimeout(r, 500 - elapsed));
+      }
+      setActionLoading({
+        active: true,
+        success: true,
+        title: 'Expense Logged!',
+        subtitle: `Balances and shared ledger are now up to date.`
+      });
+      await new Promise(r => setTimeout(r, 550));
+    } catch (err) {
+      console.error('Failed to log expense:', err);
+    } finally {
+      setDescription('');
+      setAmount('');
+      setExactShares({});
+      setPercentShares({});
+      setActionLoading({ active: false, success: false, title: '', subtitle: '' });
+      setToastMessage(`Logged "${savedCurr}${savedAmt} ${savedDesc}"`);
+      setShowSuccessToast(true);
+      setTimeout(() => setShowSuccessToast(false), 3000);
+    }
   };
 
   // Calculate active user's personal balances (who owes me, who I owe)
@@ -483,27 +547,51 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     setSettleMethod('Cash');
   };
 
-  const handleConfirmIndividualSettle = () => {
+  const handleConfirmIndividualSettle = async () => {
     if (!selectedDebtToSettle) return;
     const amt = parseFloat(settleAmount) || selectedDebtToSettle.amount;
     if (amt <= 0) return;
-
-    onSettleUp({
-      payer: selectedDebtToSettle.debtor,
-      receiver: selectedDebtToSettle.creditor,
-      amount: amt,
-      currency: selectedDebtToSettle.currency,
-      method: settleMethod || 'Settled Up'
-    });
 
     const debtor = selectedDebtToSettle.debtor;
     const creditor = selectedDebtToSettle.creditor;
     const curr = selectedDebtToSettle.currency;
 
-    setSelectedDebtToSettle(null);
-    setToastMessage(`✅ Settled ${curr}${amt.toFixed(2)} between ${debtor} and ${creditor}!`);
-    setShowSuccessToast(true);
-    setTimeout(() => setShowSuccessToast(false), 3000);
+    setActionLoading({
+      active: true,
+      success: false,
+      title: 'Recording Settlement...',
+      subtitle: `Clearing balance of ${curr}${amt.toFixed(2)} between ${debtor} and ${creditor}...`
+    });
+
+    const startTime = Date.now();
+    try {
+      await onSettleUp({
+        payer: debtor,
+        receiver: creditor,
+        amount: amt,
+        currency: curr,
+        method: settleMethod || 'Cash'
+      });
+      const elapsed = Date.now() - startTime;
+      if (elapsed < 500) {
+        await new Promise(r => setTimeout(r, 500 - elapsed));
+      }
+      setActionLoading({
+        active: true,
+        success: true,
+        title: 'Settlement Complete!',
+        subtitle: `Debts recalculated and shared ledger synchronized.`
+      });
+      await new Promise(r => setTimeout(r, 550));
+    } catch (err) {
+      console.error('Failed to record settlement:', err);
+    } finally {
+      setSelectedDebtToSettle(null);
+      setActionLoading({ active: false, success: false, title: '', subtitle: '' });
+      setToastMessage(`✅ Settled ${curr}${amt.toFixed(2)} between ${debtor} and ${creditor}!`);
+      setShowSuccessToast(true);
+      setTimeout(() => setShowSuccessToast(false), 3000);
+    }
   };
 
   const exportCSV = () => {
@@ -1593,8 +1681,32 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 disabled={isSyncingMembers}
                 onClick={async () => {
                   setIsSyncingMembers(true);
-                  if (onSyncMembers) await onSyncMembers();
-                  setIsSyncingMembers(false);
+                  setActionLoading({
+                    active: true,
+                    success: false,
+                    title: 'Syncing Telegram Members...',
+                    subtitle: 'Querying group admins & roster from Telegram...'
+                  });
+                  const startTime = Date.now();
+                  try {
+                    if (onSyncMembers) await onSyncMembers();
+                    const elapsed = Date.now() - startTime;
+                    if (elapsed < 500) {
+                      await new Promise(r => setTimeout(r, 500 - elapsed));
+                    }
+                    setActionLoading({
+                      active: true,
+                      success: true,
+                      title: 'Members Synced!',
+                      subtitle: 'Roster and group permissions are up to date.'
+                    });
+                    await new Promise(r => setTimeout(r, 550));
+                  } catch (err) {
+                    console.error('Sync failed:', err);
+                  } finally {
+                    setIsSyncingMembers(false);
+                    setActionLoading({ active: false, success: false, title: '', subtitle: '' });
+                  }
                 }}
                 className="w-full bg-black/5 hover:bg-black/10 text-[#1B1B19] py-2.5 rounded-xl font-medium text-xs transition flex items-center justify-center space-x-1.5 font-mono"
               >
@@ -1602,6 +1714,36 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 <span>{isSyncingMembers ? 'Syncing...' : 'Sync Telegram Members'}</span>
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Global Action Processing & Sync Loader */}
+      {actionLoading.active && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-5 animate-in fade-in duration-200">
+          <div className="bg-[#F8F7F4] border border-black/10 rounded-[28px] p-6 w-full max-w-xs space-y-3.5 text-center shadow-2xl">
+            {actionLoading.success ? (
+              <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto text-xl font-bold shadow-xs">
+                ✓
+              </div>
+            ) : (
+              <div className="w-12 h-12 rounded-2xl bg-[#1B1B19] text-white flex items-center justify-center mx-auto shadow-md">
+                <RefreshCw className="w-6 h-6 animate-spin text-white" />
+              </div>
+            )}
+            <div className="space-y-1">
+              <h4 className="font-bold text-[#1B1B19] text-sm">
+                {actionLoading.title}
+              </h4>
+              <p className="text-[11px] text-[#1B1B19]/60 font-mono leading-tight">
+                {actionLoading.subtitle}
+              </p>
+            </div>
+            {!actionLoading.success && (
+              <div className="w-full bg-black/5 h-1 rounded-full overflow-hidden">
+                <div className="bg-[#1B1B19] h-full rounded-full animate-pulse w-3/4 mx-auto" />
+              </div>
+            )}
           </div>
         </div>
       )}
