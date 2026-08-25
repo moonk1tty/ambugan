@@ -63,19 +63,26 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [showAddCustomUser, setShowAddCustomUser] = useState(false);
   const [customUserName, setCustomUserName] = useState('');
   const [isSyncingMembers, setIsSyncingMembers] = useState(false);
-  const [splitMode, setSplitMode] = useState<'50/50 Equal' | 'Exact Amounts' | 'Percentages' | 'Single Payer (100% owed)'>('50/50 Equal');
-  const [exactA, setExactA] = useState('');
-  const [exactB, setExactB] = useState('');
-  const [percentA, setPercentA] = useState('50');
-  const [percentB, setPercentB] = useState('50');
+  const [splitMode, setSplitMode] = useState<'Equal' | '50/50 Equal' | 'Exact Amounts' | 'Percentages' | 'Single Payer (100% owed)'>('Equal');
+  const [exactShares, setExactShares] = useState<Record<string, string>>({});
+  const [percentShares, setPercentShares] = useState<Record<string, string>>({});
+  const [singleDebtor, setSingleDebtor] = useState<string>('');
   const [category, setCategory] = useState('Food');
   
   // Toast
   const [showSuccessToast, setShowSuccessToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
 
-  // Simple Yes/No Settle Up Confirmation Modal State
-  const [showSettleModal, setShowSettleModal] = useState(false);
+  // Individual Settle Up Modal State
+  const [selectedDebtToSettle, setSelectedDebtToSettle] = useState<{
+    debtor: string;
+    creditor: string;
+    amount: number;
+    currency: string;
+  } | null>(null);
+  const [settleAmount, setSettleAmount] = useState('');
+  const [settleMethod, setSettleMethod] = useState('Cash');
+
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [inputGasUrl, setInputGasUrl] = useState(gasUrl);
   const [isTestingUrl, setIsTestingUrl] = useState(false);
@@ -169,6 +176,57 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
   const otherUser = availableUsers.find(u => u !== paidBy) || (availableUsers.length > 1 ? availableUsers[1] : 'Group');
 
+  // Auto-initialize multi-member shares when switching split modes or changing members
+  const handleSplitModeChange = (mode: 'Equal' | '50/50 Equal' | 'Exact Amounts' | 'Percentages' | 'Single Payer (100% owed)') => {
+    setSplitMode(mode);
+    if (mode === 'Exact Amounts') {
+      const numAmt = parseFloat(amount) || 0;
+      const initial: Record<string, string> = {};
+      if (numAmt > 0 && availableUsers.length > 0) {
+        const perPerson = (numAmt / availableUsers.length).toFixed(2);
+        availableUsers.forEach(u => {
+          initial[u] = exactShares[u] || perPerson;
+        });
+      } else {
+        availableUsers.forEach(u => {
+          initial[u] = exactShares[u] || '';
+        });
+      }
+      setExactShares(initial);
+    } else if (mode === 'Percentages') {
+      const initial: Record<string, string> = {};
+      if (availableUsers.length > 0) {
+        const equalPct = (100 / availableUsers.length).toFixed(1);
+        availableUsers.forEach(u => {
+          initial[u] = percentShares[u] || equalPct;
+        });
+      }
+      setPercentShares(initial);
+    } else if (mode === 'Single Payer (100% owed)') {
+      if (!singleDebtor) {
+        const firstOther = availableUsers.find(u => u !== paidBy) || availableUsers[0];
+        if (firstOther) setSingleDebtor(firstOther);
+      }
+    }
+  };
+
+  const handleDistributeExactEvenly = () => {
+    const numAmt = parseFloat(amount) || 0;
+    if (availableUsers.length === 0) return;
+    const share = (numAmt / availableUsers.length).toFixed(2);
+    const updated: Record<string, string> = {};
+    availableUsers.forEach(u => { updated[u] = share; });
+    setExactShares(updated);
+  };
+
+  const handleSetEqualPercentages = () => {
+    if (availableUsers.length === 0) return;
+    const share = (100 / availableUsers.length).toFixed(1);
+    const updated: Record<string, string> = {};
+    availableUsers.forEach(u => { updated[u] = share; });
+    setPercentShares(updated);
+  };
+
   // Calculate Net Balances grouped by Currency dynamically across all members
   const calculateCurrencyBalances = () => {
     const currencySet = new Set<string>();
@@ -195,38 +253,52 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
         userNetMap[payer] += amt;
 
-        if (e.splitMode === '50/50 Equal') {
-          const splitTarget = availableUsers.find(u => u !== payer) || availableUsers[1];
-          userNetMap[payer] -= amt / 2;
-          if (splitTarget) {
-            if (userNetMap[splitTarget] === undefined) userNetMap[splitTarget] = 0;
-            userNetMap[splitTarget] -= amt / 2;
-          }
+        if (e.splitMode === 'Equal' || e.splitMode === '50/50 Equal' || !e.splitMode) {
+          const numMembers = Math.max(availableUsers.length, 1);
+          const sharePerMember = amt / numMembers;
+          availableUsers.forEach(u => {
+            if (userNetMap[u] === undefined) userNetMap[u] = 0;
+            userNetMap[u] -= sharePerMember;
+          });
         } else if (e.splitMode === 'Exact Amounts') {
-          const userA = payer;
-          const userB = availableUsers.find(u => u !== payer) || availableUsers[1];
-          const shareA = Number(e.userAShare) || (amt / 2);
-          const shareB = Number(e.userBShare) || (amt / 2);
-          userNetMap[userA] -= shareA;
-          if (userB) {
-            if (userNetMap[userB] === undefined) userNetMap[userB] = 0;
-            userNetMap[userB] -= shareB;
+          if (e.shares && Object.keys(e.shares).length > 0) {
+            Object.entries(e.shares).forEach(([u, share]) => {
+              if (userNetMap[u] === undefined) userNetMap[u] = 0;
+              userNetMap[u] -= Number(share) || 0;
+            });
+          } else {
+            const userA = payer;
+            const userB = availableUsers.find(u => u !== payer) || availableUsers[1];
+            const shareA = Number(e.userAShare) || (amt / 2);
+            const shareB = Number(e.userBShare) || (amt / 2);
+            userNetMap[userA] -= shareA;
+            if (userB) {
+              if (userNetMap[userB] === undefined) userNetMap[userB] = 0;
+              userNetMap[userB] -= shareB;
+            }
           }
         } else if (e.splitMode === 'Percentages') {
-          const userA = payer;
-          const userB = availableUsers.find(u => u !== payer) || availableUsers[1];
-          const pA = (Number(e.userAPercent) || 50) / 100;
-          const pB = (Number(e.userBPercent) || 50) / 100;
-          userNetMap[userA] -= amt * pA;
-          if (userB) {
-            if (userNetMap[userB] === undefined) userNetMap[userB] = 0;
-            userNetMap[userB] -= amt * pB;
+          if (e.percentages && Object.keys(e.percentages).length > 0) {
+            Object.entries(e.percentages).forEach(([u, pct]) => {
+              if (userNetMap[u] === undefined) userNetMap[u] = 0;
+              userNetMap[u] -= amt * ((Number(pct) || 0) / 100);
+            });
+          } else {
+            const userA = payer;
+            const userB = availableUsers.find(u => u !== payer) || availableUsers[1];
+            const pA = (Number(e.userAPercent) || 50) / 100;
+            const pB = (Number(e.userBPercent) || 50) / 100;
+            userNetMap[userA] -= amt * pA;
+            if (userB) {
+              if (userNetMap[userB] === undefined) userNetMap[userB] = 0;
+              userNetMap[userB] -= amt * pB;
+            }
           }
         } else if (e.splitMode === 'Single Payer (100% owed)') {
-          const userB = availableUsers.find(u => u !== payer) || availableUsers[1];
-          if (userB) {
-            if (userNetMap[userB] === undefined) userNetMap[userB] = 0;
-            userNetMap[userB] -= amt;
+          const debtor = e.singleOwer || availableUsers.find(u => u !== payer) || availableUsers[1];
+          if (debtor) {
+            if (userNetMap[debtor] === undefined) userNetMap[debtor] = 0;
+            userNetMap[debtor] -= amt;
           }
         }
       });
@@ -279,48 +351,89 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     e.preventDefault();
     if (!description.trim() || !amount || Number(amount) <= 0) return;
 
+    const numAmt = parseFloat(amount);
+    let finalShares: Record<string, number> | undefined = undefined;
+    let finalPercentages: Record<string, number> | undefined = undefined;
+    let finalSingleOwer: string | undefined = undefined;
+
+    if (splitMode === 'Exact Amounts') {
+      finalShares = {};
+      availableUsers.forEach(u => {
+        finalShares![u] = parseFloat(exactShares[u] || '0') || 0;
+      });
+    } else if (splitMode === 'Percentages') {
+      finalPercentages = {};
+      availableUsers.forEach(u => {
+        finalPercentages![u] = parseFloat(percentShares[u] || '0') || 0;
+      });
+    } else if (splitMode === 'Single Payer (100% owed)') {
+      finalSingleOwer = singleDebtor || availableUsers.find(u => u !== paidBy) || availableUsers[0];
+    }
+
     onAddExpense({
       description: description.trim(),
-      amount: parseFloat(amount),
+      amount: numAmt,
       currency,
       paidBy: paidBy.trim() || activeUser,
       splitMode,
-      userAShare: exactA ? parseFloat(exactA) : undefined,
-      userBShare: exactB ? parseFloat(exactB) : undefined,
-      userAPercent: percentA ? parseFloat(percentA) : undefined,
-      userBPercent: percentB ? parseFloat(percentB) : undefined,
+      userAShare: finalShares ? finalShares[paidBy || activeUser] : undefined,
+      userBShare: finalShares ? finalShares[otherUser] : undefined,
+      userAPercent: finalPercentages ? finalPercentages[paidBy || activeUser] : undefined,
+      userBPercent: finalPercentages ? finalPercentages[otherUser] : undefined,
+      shares: finalShares,
+      percentages: finalPercentages,
+      singleOwer: finalSingleOwer,
       createdBy: activeUser,
       category
     });
 
     setDescription('');
     setAmount('');
-    setExactA('');
-    setExactB('');
+    setExactShares({});
+    setPercentShares({});
     setToastMessage(`Logged "${currency}${amount} ${description}"`);
     setShowSuccessToast(true);
     setTimeout(() => setShowSuccessToast(false), 3000);
   };
 
-  // Settle Up Handler
-  const handleConfirmSettleUp = () => {
-    if (activeBalances.length === 0) {
-      setShowSettleModal(false);
-      return;
-    }
+  // Calculate active user's personal balances (who owes me, who I owe)
+  const myDebts = activeBalances.filter(
+    b => b.debtor.toLowerCase() === activeUser.toLowerCase()
+  );
+  const myCredits = activeBalances.filter(
+    b => b.creditor.toLowerCase() === activeUser.toLowerCase()
+  );
 
-    activeBalances.forEach(cb => {
-      onSettleUp({
-        payer: cb.debtor,
-        receiver: cb.creditor,
-        amount: cb.amount,
-        currency: cb.currency,
-        method: 'Settled Up'
-      });
+  const totalOwedByMe = myDebts.reduce((sum, b) => sum + b.amount, 0);
+  const totalOwedToMe = myCredits.reduce((sum, b) => sum + b.amount, 0);
+  const myNet = totalOwedToMe - totalOwedByMe;
+
+  // Individual Settle Up Handlers
+  const handleOpenIndividualSettle = (debt: { debtor: string; creditor: string; amount: number; currency: string }) => {
+    setSelectedDebtToSettle(debt);
+    setSettleAmount(String(debt.amount));
+    setSettleMethod('Cash');
+  };
+
+  const handleConfirmIndividualSettle = () => {
+    if (!selectedDebtToSettle) return;
+    const amt = parseFloat(settleAmount) || selectedDebtToSettle.amount;
+    if (amt <= 0) return;
+
+    onSettleUp({
+      payer: selectedDebtToSettle.debtor,
+      receiver: selectedDebtToSettle.creditor,
+      amount: amt,
+      currency: selectedDebtToSettle.currency,
+      method: settleMethod || 'Settled Up'
     });
 
-    setShowSettleModal(false);
-    setToastMessage(`All balances marked as settled up!`);
+    const debtor = selectedDebtToSettle.debtor;
+    const creditor = selectedDebtToSettle.creditor;
+    const curr = selectedDebtToSettle.currency;
+
+    setSelectedDebtToSettle(null);
+    setToastMessage(`✅ Settled ${curr}${amt.toFixed(2)} between ${debtor} and ${creditor}!`);
     setShowSuccessToast(true);
     setTimeout(() => setShowSuccessToast(false), 3000);
   };
@@ -416,38 +529,58 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       {/* Main Content Area */}
       <div className="flex-1 overflow-y-auto space-y-4 py-2">
         
-        {/* Group Net Balance Card */}
-        <div className="bg-white/70 backdrop-blur-md border border-black/5 rounded-2xl px-4 py-3 shadow-sm flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#1B1B19]/50 font-semibold leading-none mb-1">
-              Group Net Balance
+        {/* Personal Balance Card (Strictly for Active User / Viewing Telegram Member) */}
+        {activeTab === 'new' && (
+          <div className="bg-white/70 backdrop-blur-md border border-black/5 rounded-2xl px-4 py-3 shadow-sm flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-[#1B1B19]/50 font-semibold leading-none mb-1">
+                <span>Your Balance</span>
+                <span className="text-[#1B1B19]/40 font-normal">({activeUser})</span>
+              </div>
+              
+              <div className="flex items-center gap-2 flex-wrap">
+                {myDebts.length === 0 && myCredits.length === 0 ? (
+                  <div className="flex items-center gap-1.5 text-sm font-bold font-mono tracking-tight text-emerald-600">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>₱0.00</span>
+                    <span className="text-xs text-[#1B1B19]/60 font-medium font-sans">• Settled up (You owe nothing)</span>
+                  </div>
+                ) : (
+                  <>
+                    <span className={`text-sm font-bold font-mono tracking-tight ${
+                      myNet > 0.009 
+                        ? 'text-emerald-600' 
+                        : myNet < -0.009 
+                          ? 'text-rose-600' 
+                          : 'text-[#1B1B19]'
+                    }`}>
+                      {myNet > 0.009 ? '+' : myNet < -0.009 ? '-' : ''}
+                      {currency}{Math.abs(myNet).toFixed(2)}
+                    </span>
+                    <span className="text-xs text-[#1B1B19]/70 font-medium truncate">
+                      {myCredits.length > 0 && myDebts.length === 0 && (
+                        `• ${myCredits.map(c => `${c.debtor} owes you ${c.currency}${c.amount.toFixed(2)}`).join(', ')}`
+                      )}
+                      {myDebts.length > 0 && myCredits.length === 0 && (
+                        `• You owe ${myDebts.map(d => `${d.creditor} (${d.currency}${d.amount.toFixed(2)})`).join(', ')}`
+                      )}
+                      {myCredits.length > 0 && myDebts.length > 0 && (
+                        `• +${currency}${totalOwedToMe.toFixed(2)} owed to you, -${currency}${totalOwedByMe.toFixed(2)} you owe`
+                      )}
+                    </span>
+                  </>
+                )}
+              </div>
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              {activeBalances.length === 0 ? (
-                <div className="flex items-center gap-1.5 text-sm font-bold font-mono tracking-tight text-[#1B1B19]">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>₱0.00</span>
-                </div>
-              ) : (
-                activeBalances.map((ab, idx) => (
-                  <span key={idx} className="text-sm font-bold font-mono tracking-tight text-[#1B1B19]">
-                    {ab.currency}{ab.amount.toFixed(2)}
-                  </span>
-                ))
-              )}
-              <span className="text-xs text-[#1B1B19]/60 font-medium truncate">
-                {activeBalances.length === 0 ? '• Settled' : `• ${activeBalances.map(ab => `${ab.debtor} owes ${ab.creditor}`).join(', ')}`}
-              </span>
-            </div>
-          </div>
 
-          <button
-            onClick={() => setActiveTab('balances')}
-            className="font-mono text-[10px] uppercase tracking-wider text-[#4A6CF7] hover:underline font-bold shrink-0"
-          >
-            Details →
-          </button>
-        </div>
+            <button
+              onClick={() => setActiveTab('balances')}
+              className="font-mono text-[10px] uppercase tracking-wider text-[#4A6CF7] hover:underline font-bold shrink-0"
+            >
+              Settle →
+            </button>
+          </div>
+        )}
 
         {/* TAB 1: LOG EXPENSE FORM */}
         {activeTab === 'new' && (
@@ -569,10 +702,17 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
             {/* Split Mode Selector */}
             <div>
-              <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/50 mb-1">Split Mode</label>
+              <div className="flex justify-between items-center mb-1">
+                <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/50">Split Mode</label>
+                {(splitMode === 'Equal' || splitMode === '50/50 Equal') && availableUsers.length > 0 && (
+                  <span className="text-[10px] font-mono text-[#1B1B19]/60 font-semibold">
+                    {availableUsers.length} members ({amount && Number(amount) > 0 ? `${currency}${(Number(amount) / availableUsers.length).toFixed(2)} each` : 'divided equally'})
+                  </span>
+                )}
+              </div>
               <div className="grid grid-cols-2 gap-1.5">
                 {[
-                  { id: '50/50 Equal', label: '50/50 Equal' },
+                  { id: 'Equal', label: 'Equal' },
                   { id: 'Exact Amounts', label: 'Exact Amounts' },
                   { id: 'Percentages', label: 'Percentages (%)' },
                   { id: 'Single Payer (100% owed)', label: '100% Owed' }
@@ -580,9 +720,9 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                   <button
                     key={mode.id}
                     type="button"
-                    onClick={() => setSplitMode(mode.id as any)}
+                    onClick={() => handleSplitModeChange(mode.id as any)}
                     className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium border text-left transition ${
-                      splitMode === mode.id
+                      splitMode === mode.id || (mode.id === 'Equal' && splitMode === '50/50 Equal')
                         ? 'bg-[#1B1B19] border-[#1B1B19] text-white font-semibold'
                         : 'bg-white/40 border-black/5 text-[#1B1B19]/70 hover:bg-white/80'
                     }`}
@@ -593,63 +733,201 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
               </div>
             </div>
 
-            {/* Custom Split Inputs */}
-            {splitMode === 'Exact Amounts' && (
-              <div className="bg-white/40 p-2.5 rounded-xl border border-black/5 grid grid-cols-2 gap-2 text-xs">
-                <div>
-                  <label className="text-[10px] font-mono text-[#1B1B19]/60 truncate block">{paidBy || 'Payer'} ({currency})</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    placeholder="0.00"
-                    value={exactA}
-                    onChange={e => setExactA(e.target.value)}
-                    className="w-full mt-1 bg-white/80 border border-black/5 rounded-lg px-2 py-1 text-xs"
-                  />
+            {/* Equal Split Live Breakdown */}
+            {(splitMode === 'Equal' || splitMode === '50/50 Equal') && availableUsers.length > 1 && (
+              <div className="bg-white/40 p-2.5 rounded-xl border border-black/5 text-xs text-[#1B1B19]/80 space-y-1.5">
+                <div className="flex justify-between items-center text-[10px] font-mono text-[#1B1B19]/60 uppercase font-semibold">
+                  <span>Equal Share ({availableUsers.length} members)</span>
+                  <span>
+                    {amount && Number(amount) > 0 
+                      ? `${currency}${(Number(amount) / availableUsers.length).toFixed(2)} / person` 
+                      : 'Enter amount above'}
+                  </span>
                 </div>
-                <div>
-                  <label className="text-[10px] font-mono text-[#1B1B19]/60 truncate block">{otherUser} ({currency})</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    placeholder="0.00"
-                    value={exactB}
-                    onChange={e => setExactB(e.target.value)}
-                    className="w-full mt-1 bg-white/80 border border-black/5 rounded-lg px-2 py-1 text-xs"
-                  />
+                <div className="flex flex-wrap gap-1">
+                  {availableUsers.map(u => {
+                    const share = amount && Number(amount) > 0 
+                      ? (Number(amount) / availableUsers.length).toFixed(2) 
+                      : '0.00';
+                    const isPayer = u === (paidBy || activeUser);
+                    return (
+                      <span 
+                        key={u} 
+                        className={`px-2 py-0.5 rounded-md text-[10px] font-mono border ${
+                          isPayer 
+                            ? 'bg-[#1B1B19] text-white border-[#1B1B19] font-bold' 
+                            : 'bg-white text-[#1B1B19] border-black/5'
+                        }`}
+                      >
+                        {isPayer ? `Paid: ${u}` : u}: {currency}{share}
+                      </span>
+                    );
+                  })}
                 </div>
               </div>
             )}
 
-            {splitMode === 'Percentages' && (
-              <div className="bg-white/40 p-2.5 rounded-xl border border-black/5 grid grid-cols-2 gap-2 text-xs">
-                <div>
-                  <label className="text-[10px] font-mono text-[#1B1B19]/60 truncate block">{paidBy || 'Payer'} %</label>
-                  <input
-                    type="number"
-                    placeholder="50"
-                    value={percentA}
-                    onChange={e => {
-                      setPercentA(e.target.value);
-                      const num = parseFloat(e.target.value);
-                      if (!isNaN(num)) setPercentB(String(100 - num));
-                    }}
-                    className="w-full mt-1 bg-white/80 border border-black/5 rounded-lg px-2 py-1 text-xs"
-                  />
+            {/* Exact Amounts Multi-Member Inputs */}
+            {splitMode === 'Exact Amounts' && (
+              <div className="bg-white/40 p-3 rounded-2xl border border-black/5 space-y-2.5 text-xs">
+                <div className="flex justify-between items-center">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
+                    Exact Shares ({availableUsers.length} members)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleDistributeExactEvenly}
+                    className="font-mono text-[10px] text-[#4A6CF7] hover:underline font-semibold"
+                  >
+                    Distribute Evenly
+                  </button>
                 </div>
-                <div>
-                  <label className="text-[10px] font-mono text-[#1B1B19]/60 truncate block">{otherUser} %</label>
-                  <input
-                    type="number"
-                    placeholder="50"
-                    value={percentB}
-                    onChange={e => {
-                      setPercentB(e.target.value);
-                      const num = parseFloat(e.target.value);
-                      if (!isNaN(num)) setPercentA(String(100 - num));
-                    }}
-                    className="w-full mt-1 bg-white/80 border border-black/5 rounded-lg px-2 py-1 text-xs"
-                  />
+
+                <div className="grid grid-cols-2 gap-2">
+                  {availableUsers.map(u => {
+                    const isPayer = u === (paidBy || activeUser);
+                    return (
+                      <div key={u} className="bg-white/70 p-2 rounded-xl border border-black/5 space-y-1">
+                        <div className="flex justify-between items-center text-[10px] font-mono text-[#1B1B19]/70">
+                          <span className="truncate font-semibold max-w-[85px]">{isPayer ? `${u} (Payer)` : u}</span>
+                          <span className="font-semibold">{currency}</span>
+                        </div>
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="0.00"
+                          value={exactShares[u] ?? ''}
+                          onChange={e => {
+                            const val = e.target.value;
+                            setExactShares(prev => ({ ...prev, [u]: val }));
+                          }}
+                          className="w-full bg-white border border-black/10 rounded-lg px-2 py-1 text-xs font-mono font-bold text-[#1B1B19] focus:outline-none focus:ring-1 focus:ring-[#1B1B19]"
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Total Allocation Check */}
+                {(() => {
+                  const numAmt = parseFloat(amount) || 0;
+                  const totalAllocated = availableUsers.reduce((sum, u) => sum + (parseFloat(exactShares[u] || '0') || 0), 0);
+                  const diff = numAmt - totalAllocated;
+                  const isMatch = Math.abs(diff) < 0.01;
+
+                  return (
+                    <div className="flex items-center justify-between text-[11px] font-mono pt-1 border-t border-black/5">
+                      <span className="text-[#1B1B19]/60">
+                        Allocated: <strong className="text-[#1B1B19]">{currency}{totalAllocated.toFixed(2)}</strong> / {currency}{numAmt.toFixed(2)}
+                      </span>
+                      <span className={`font-semibold px-2 py-0.5 rounded ${
+                        isMatch ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        {isMatch ? '✓ Balanced' : `Diff: ${diff > 0 ? '+' : ''}${currency}${diff.toFixed(2)}`}
+                      </span>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Percentages Multi-Member Inputs */}
+            {splitMode === 'Percentages' && (
+              <div className="bg-white/40 p-3 rounded-2xl border border-black/5 space-y-2.5 text-xs">
+                <div className="flex justify-between items-center">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
+                    Percentage Shares ({availableUsers.length} members)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleSetEqualPercentages}
+                    className="font-mono text-[10px] text-[#4A6CF7] hover:underline font-semibold"
+                  >
+                    Set Equal %
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  {availableUsers.map(u => {
+                    const isPayer = u === (paidBy || activeUser);
+                    const pct = parseFloat(percentShares[u] || '0') || 0;
+                    const numAmt = parseFloat(amount) || 0;
+                    const calcAmount = numAmt > 0 ? ((numAmt * pct) / 100).toFixed(2) : '0.00';
+
+                    return (
+                      <div key={u} className="bg-white/70 p-2 rounded-xl border border-black/5 space-y-1">
+                        <div className="flex justify-between items-center text-[10px] font-mono text-[#1B1B19]/70">
+                          <span className="truncate font-semibold max-w-[70px]">{isPayer ? `${u} (Payer)` : u}</span>
+                          <span className="text-[#1B1B19]/50">{currency}{calcAmount}</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            step="0.1"
+                            placeholder="0"
+                            value={percentShares[u] ?? ''}
+                            onChange={e => {
+                              const val = e.target.value;
+                              setPercentShares(prev => ({ ...prev, [u]: val }));
+                            }}
+                            className="w-full bg-white border border-black/10 rounded-lg px-2 py-1 text-xs font-mono font-bold text-[#1B1B19] focus:outline-none focus:ring-1 focus:ring-[#1B1B19]"
+                          />
+                          <span className="text-xs font-mono text-[#1B1B19]/60 font-semibold">%</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Total % Check */}
+                {(() => {
+                  const totalPct = availableUsers.reduce((sum, u) => sum + (parseFloat(percentShares[u] || '0') || 0), 0);
+                  const isMatch = Math.abs(totalPct - 100) < 0.1;
+
+                  return (
+                    <div className="flex items-center justify-between text-[11px] font-mono pt-1 border-t border-black/5">
+                      <span className="text-[#1B1B19]/60">
+                        Total %: <strong className="text-[#1B1B19]">{totalPct.toFixed(1)}%</strong>
+                      </span>
+                      <span className={`font-semibold px-2 py-0.5 rounded ${
+                        isMatch ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        {isMatch ? '✓ 100% Complete' : `Diff: ${(100 - totalPct).toFixed(1)}%`}
+                      </span>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Single Payer (100% owed) Member Selector */}
+            {splitMode === 'Single Payer (100% owed)' && (
+              <div className="bg-white/40 p-3 rounded-2xl border border-black/5 space-y-2 text-xs">
+                <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
+                  Select Who Owes 100% of this Expense
+                </label>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {availableUsers.map(u => {
+                    const isPayer = u === (paidBy || activeUser);
+                    const isSelected = (singleDebtor || (availableUsers.find(k => k !== paidBy) || availableUsers[0])) === u;
+                    return (
+                      <button
+                        key={u}
+                        type="button"
+                        onClick={() => setSingleDebtor(u)}
+                        className={`p-2 rounded-xl text-left border transition ${
+                          isSelected
+                            ? 'bg-[#1B1B19] text-white border-[#1B1B19] shadow-sm'
+                            : 'bg-white/70 border-black/5 text-[#1B1B19]/80 hover:bg-white'
+                        }`}
+                      >
+                        <p className="font-semibold text-xs truncate">{u} {isPayer ? '(Payer)' : ''}</p>
+                        <p className={`text-[10px] font-mono ${isSelected ? 'text-white/70' : 'text-[#1B1B19]/50'}`}>
+                          Owes {currency}{amount || '0.00'}
+                        </p>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -664,41 +942,91 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
           </form>
         )}
 
-        {/* TAB 2: BALANCES & SETTLE UP */}
+        {/* TAB 2: BALANCES & INDIVIDUAL SETTLEMENTS */}
         {activeTab === 'balances' && (
           <div className="space-y-3">
-            <div className="bg-white/70 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-sm text-center space-y-3">
-              <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold">
-                Settlement Overview
+            <div className="bg-white/70 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-sm space-y-3">
+              <div className="flex items-center justify-between border-b border-black/5 pb-2">
+                <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold">
+                  Member Settlements
+                </div>
+                <span className="text-[10px] font-mono text-[#1B1B19]/40">
+                  {activeBalances.length} {activeBalances.length === 1 ? 'balance' : 'balances'}
+                </span>
               </div>
               
               {activeBalances.length === 0 ? (
-                <div className="py-2 space-y-1">
-                  <p className="text-2xl font-bold font-mono text-emerald-600">₱0.00</p>
-                  <p className="text-xs text-[#1B1B19]/70">All settled up! No outstanding balances across any currency.</p>
+                <div className="py-4 text-center space-y-1">
+                  <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto mb-1 text-base">
+                    ✓
+                  </div>
+                  <p className="text-lg font-bold font-mono text-emerald-600">₱0.00</p>
+                  <p className="text-xs text-[#1B1B19]/70 font-medium">All settled up! No outstanding balances across the group.</p>
                 </div>
               ) : (
-                <div className="py-1 space-y-2">
-                  {activeBalances.map((cb, i) => (
-                    <div key={i} className="bg-white/60 p-3 rounded-xl border border-black/5 text-xs flex justify-between items-center">
-                      <span className="text-[#1B1B19]/70 font-medium">{cb.currency} Balance:</span>
-                      <span className="font-bold font-mono text-sm text-[#1B1B19]">
-                        {cb.debtor} owes {cb.creditor} {cb.currency}{cb.amount.toFixed(2)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
+                <div className="space-y-2">
+                  <p className="text-[11px] text-[#1B1B19]/60 leading-tight">
+                    Settle balances individually for each member pair. All group members see the same live settlements.
+                  </p>
+                  {activeBalances.map((cb, i) => {
+                    const isDebtor = cb.debtor.toLowerCase() === activeUser.toLowerCase();
+                    const isCreditor = cb.creditor.toLowerCase() === activeUser.toLowerCase();
 
-              {activeBalances.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowSettleModal(true)}
-                  className="w-full bg-[#4A6CF7] hover:bg-[#3B5BE3] text-white py-3 rounded-2xl font-semibold text-xs shadow-sm transition flex items-center justify-center space-x-2"
-                >
-                  <ArrowRightLeft className="w-4 h-4" />
-                  <span>Settle Up Now</span>
-                </button>
+                    return (
+                      <div 
+                        key={i} 
+                        className={`p-3 rounded-2xl border transition flex items-center justify-between gap-2.5 ${
+                          isDebtor 
+                            ? 'bg-rose-50/60 border-rose-200/60' 
+                            : isCreditor 
+                              ? 'bg-emerald-50/60 border-emerald-200/60' 
+                              : 'bg-white/60 border-black/5'
+                        }`}
+                      >
+                        <div className="min-w-0 space-y-0.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-bold text-xs text-[#1B1B19]">
+                              {isDebtor ? (
+                                <>You owe <strong className="text-rose-700">{cb.creditor}</strong></>
+                              ) : isCreditor ? (
+                                <><strong className="text-emerald-700">{cb.debtor}</strong> owes You</>
+                              ) : (
+                                <>{cb.debtor} owes {cb.creditor}</>
+                              )}
+                            </span>
+                            {isDebtor && (
+                              <span className="text-[9px] font-mono px-1.5 py-0.2 bg-rose-200/80 text-rose-800 rounded font-semibold">
+                                You Pay
+                              </span>
+                            )}
+                            {isCreditor && (
+                              <span className="text-[9px] font-mono px-1.5 py-0.2 bg-emerald-200/80 text-emerald-800 rounded font-semibold">
+                                You Receive
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-[#1B1B19]/50 font-mono">
+                            Direct Settlement • {cb.currency}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="font-bold font-mono text-sm text-[#1B1B19]">
+                            {cb.currency}{cb.amount.toFixed(2)}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenIndividualSettle(cb)}
+                            className="bg-[#1B1B19] hover:bg-black text-white px-3 py-1.5 rounded-xl font-semibold text-xs shadow-sm transition active:scale-95 flex items-center gap-1"
+                          >
+                            <ArrowRightLeft className="w-3 h-3" />
+                            <span>Settle</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
 
@@ -732,7 +1060,9 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                     <div key={i} className="bg-white/50 p-2.5 rounded-xl border border-black/5 flex items-center justify-between text-xs">
                       <div>
                         <span className="font-semibold text-[#1B1B19]">{s.payer} paid {s.receiver}</span>
-                        <p className="text-[10px] text-[#1B1B19]/50 font-mono">{new Date(s.timestamp).toLocaleDateString()}</p>
+                        <p className="text-[10px] text-[#1B1B19]/50 font-mono">
+                          {s.method ? `via ${s.method} • ` : ''}{new Date(s.timestamp).toLocaleDateString()}
+                        </p>
                       </div>
                       <span className="font-bold font-mono text-[#1B1B19]">{s.currency || '₱'}{Number(s.amount).toFixed(2)}</span>
                     </div>
@@ -795,48 +1125,103 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
       </div>
 
-      {/* Settle Up Modal */}
-      {showSettleModal && (
+      {/* Individual Settlement Modal */}
+      {selectedDebtToSettle && (
         <div className="absolute inset-0 bg-black/40 backdrop-blur-md z-50 p-5 flex items-center justify-center">
-          <div className="bg-[#F8F7F4] border border-black/10 rounded-[32px] p-6 w-full max-w-xs space-y-4 shadow-2xl text-center">
-            <div className="w-12 h-12 rounded-2xl bg-[#1B1B19] text-white flex items-center justify-center mx-auto text-xl shadow-md">
-              🤝
-            </div>
-
-            <div className="space-y-1">
-              <h4 className="font-bold text-[#1B1B19] text-base">
-                Are you sure you're settled up?
-              </h4>
-              <p className="text-xs text-[#1B1B19]/70">
-                This will clear all current active balances and record a settlement entry.
-              </p>
-            </div>
-
-            {activeBalances.length > 0 && (
-              <div className="bg-white/80 p-3 rounded-xl border border-black/5 text-left space-y-1 text-[11px] font-mono">
-                <p className="text-[#1B1B19]/60 font-semibold border-b border-black/5 pb-1">Balances to clear:</p>
-                {activeBalances.map((ab, idx) => (
-                  <p key={idx} className="text-[#1B1B19] font-bold">
-                    • {ab.currency}{ab.amount.toFixed(2)} ({ab.debtor} ➔ {ab.creditor})
+          <div className="bg-[#F8F7F4] border border-black/10 rounded-[32px] p-6 w-full max-w-sm space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-black/5 pb-2">
+              <div className="flex items-center space-x-2">
+                <div className="w-8 h-8 rounded-xl bg-[#1B1B19] text-white flex items-center justify-center text-sm shadow-md">
+                  🤝
+                </div>
+                <div>
+                  <h4 className="font-bold text-[#1B1B19] text-sm">
+                    Settle Individual Balance
+                  </h4>
+                  <p className="text-[10px] text-[#1B1B19]/60 font-mono">
+                    Record Member Payment
                   </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedDebtToSettle(null)}
+                className="text-xs text-[#1B1B19]/50 hover:text-[#1B1B19] font-mono px-2 py-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Debt summary card */}
+            <div className="bg-white/80 p-3.5 rounded-2xl border border-black/5 space-y-1.5 text-xs">
+              <div className="flex justify-between items-center text-[#1B1B19]/70">
+                <span>Payer:</span>
+                <span className="font-bold text-[#1B1B19]">{selectedDebtToSettle.debtor}</span>
+              </div>
+              <div className="flex justify-between items-center text-[#1B1B19]/70">
+                <span>Receiver:</span>
+                <span className="font-bold text-[#1B1B19]">{selectedDebtToSettle.creditor}</span>
+              </div>
+              <div className="flex justify-between items-center text-[#1B1B19]/70 border-t border-black/5 pt-1.5">
+                <span>Total Balance:</span>
+                <span className="font-bold font-mono text-[#1B1B19] text-sm">
+                  {selectedDebtToSettle.currency}{selectedDebtToSettle.amount.toFixed(2)}
+                </span>
+              </div>
+            </div>
+
+            {/* Amount input */}
+            <div className="space-y-1">
+              <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60">
+                Amount Paid ({selectedDebtToSettle.currency})
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                value={settleAmount}
+                onChange={e => setSettleAmount(e.target.value)}
+                required
+                className="w-full bg-white border border-black/10 px-3.5 py-2 rounded-xl text-sm font-semibold font-mono text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20"
+              />
+            </div>
+
+            {/* Payment Method Selector */}
+            <div className="space-y-1.5">
+              <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60">
+                Payment Method
+              </label>
+              <div className="flex flex-wrap gap-1.5">
+                {['Cash', 'GCash', 'Maya', 'Bank Transfer', 'Other'].map(m => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setSettleMethod(m)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition ${
+                      settleMethod === m
+                        ? 'bg-[#1B1B19] text-white border-[#1B1B19] font-semibold'
+                        : 'bg-white/60 border-black/5 text-[#1B1B19]/70 hover:bg-white'
+                    }`}
+                  >
+                    {m}
+                  </button>
                 ))}
               </div>
-            )}
+            </div>
 
             <div className="grid grid-cols-2 gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => setShowSettleModal(false)}
+                onClick={() => setSelectedDebtToSettle(null)}
                 className="w-full bg-black/5 hover:bg-black/10 text-[#1B1B19] py-2.5 rounded-xl font-semibold text-xs transition"
               >
-                No
+                Cancel
               </button>
               <button
                 type="button"
-                onClick={handleConfirmSettleUp}
+                onClick={handleConfirmIndividualSettle}
                 className="w-full bg-[#1B1B19] hover:bg-black text-white py-2.5 rounded-xl font-semibold text-xs shadow-md transition"
               >
-                Yes
+                Confirm Settle
               </button>
             </div>
           </div>

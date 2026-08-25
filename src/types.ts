@@ -13,11 +13,14 @@ export interface Expense {
   amount: number;
   paidBy: string;
   currency?: string; // Default '₱'
-  splitMode: '50/50 Equal' | 'Exact Amounts' | 'Percentages' | 'Single Payer (100% owed)';
+  splitMode: 'Equal' | '50/50 Equal' | 'Exact Amounts' | 'Percentages' | 'Single Payer (100% owed)' | string;
   userAShare?: number;
   userBShare?: number;
   userAPercent?: number;
   userBPercent?: number;
+  shares?: Record<string, number>;
+  percentages?: Record<string, number>;
+  singleOwer?: string;
   createdBy: string;
   category: string;
   chatId?: string;
