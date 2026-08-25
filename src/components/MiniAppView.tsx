@@ -514,15 +514,10 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             <span>{availableUsers.length} {availableUsers.length === 1 ? 'member' : 'members'}</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => setShowSettingsModal(true)}
-            className="text-[10px] font-mono font-medium px-2.5 py-1 bg-black/5 hover:bg-black/10 rounded-full text-[#1B1B19]/70 flex items-center space-x-1.5 border border-black/5 transition"
-          >
-            <span className={`w-1.5 h-1.5 rounded-full ${isOnlineGas ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`}></span>
-            <span>{isOnlineGas ? 'Synced' : 'Config'}</span>
-            <Settings className="w-3 h-3 text-[#1B1B19]/60" />
-          </button>
+          <div className="text-[10px] font-mono font-medium px-2.5 py-1 bg-black/5 rounded-full text-[#1B1B19]/70 flex items-center space-x-1.5 border border-black/5 select-none">
+            <span className={`w-1.5 h-1.5 rounded-full ${isOnlineGas ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
+            <span>{isOnlineGas ? 'Synced' : 'Connecting'}</span>
+          </div>
         </div>
       </header>
 
@@ -1297,10 +1292,43 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             {/* Deployment Instructions Checklist */}
             <div className="bg-white/60 p-3 rounded-2xl border border-black/5 text-[11px] space-y-1.5 text-[#1B1B19]/80">
               <p className="font-bold font-mono text-[10px] uppercase text-[#1B1B19]">Troubleshooting Checklist:</p>
-              <p className="leading-snug">• <strong>Execute as</strong>: Must be <code>Me (your email)</code> (NOT "User accessing web app").</p>
-              <p className="leading-snug">• <strong>Who has access</strong>: Must be <code>Anyone</code>.</p>
-              <p className="leading-snug">• If you deployed as a <strong>New deployment</strong>, paste your new Web App URL above.</p>
+              <p className="leading-snug">• <strong>Deploy New Version</strong>: In Apps Script, click <code>Deploy &gt; Manage deployments &gt; Edit (pencil) &gt; Version: New version &gt; Deploy</code>.</p>
+              <p className="leading-snug">• <strong>Bot Privacy (@BotFather)</strong>: To receive <code>/start</code> in groups, send <code>/setprivacy</code> to @BotFather and choose <code>Disable</code>, or promote the bot to Admin.</p>
+              <p className="leading-snug">• <strong>Execute as</strong>: <code>Me</code> | <strong>Who has access</strong>: <code>Anyone</code>.</p>
             </div>
+
+            {/* Sync Webhook Button */}
+            <button
+              type="button"
+              disabled={isTestingUrl}
+              onClick={async () => {
+                setIsTestingUrl(true);
+                setTestResult(null);
+                try {
+                  const cleanUrl = inputGasUrl.trim();
+                  if (!cleanUrl.startsWith('http')) {
+                    setTestResult({ status: 'error', message: 'Enter a valid Apps Script Web App URL first.' });
+                    setIsTestingUrl(false);
+                    return;
+                  }
+                  const res = await fetch(`${cleanUrl}${cleanUrl.includes('?') ? '&' : '?'}action=set_webhook`);
+                  const json = await res.json();
+                  if (json.result && json.result.ok) {
+                    setTestResult({ status: 'success', message: '✅ Webhook successfully connected to Telegram! Bot will now respond to commands.' });
+                  } else {
+                    setTestResult({ status: 'error', message: `Webhook registration response: ${JSON.stringify(json.result || json)}` });
+                  }
+                } catch (err: any) {
+                  setTestResult({ status: 'error', message: `Webhook registration failed: ${err.message}` });
+                } finally {
+                  setIsTestingUrl(false);
+                }
+              }}
+              className="w-full bg-[#1B1B19] hover:bg-black text-white py-2 rounded-xl font-semibold text-xs transition flex items-center justify-center space-x-1.5"
+            >
+              <Send className="w-3 h-3" />
+              <span>Register / Refresh Telegram Webhook</span>
+            </button>
 
             <div className="grid grid-cols-2 gap-2 pt-1">
               <button
