@@ -22,7 +22,7 @@ export interface Expense {
   percentages?: Record<string, number>;
   singleOwer?: string;
   createdBy: string;
-  category: string;
+  category?: string;
   chatId?: string;
 }
 
@@ -57,4 +57,14 @@ export interface GroupChatMessage {
     date: string;
     imageUrl?: string;
   };
+}
+
+export function formatAmount(val: number | string | undefined | null, decimals: number = 2): string {
+  if (val === undefined || val === null || val === '') return '0.00';
+  const num = typeof val === 'number' ? val : parseFloat(String(val).replace(/,/g, ''));
+  if (isNaN(num)) return '0.00';
+  return num.toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  });
 }

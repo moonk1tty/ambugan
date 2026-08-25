@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Send, Image as ImageIcon, Bot, Sparkles, CheckCircle2, User, Loader2 } from 'lucide-react';
-import { GroupChatMessage, Expense } from '../types';
+import { GroupChatMessage, Expense, formatAmount } from '../types';
 import { GoogleGenAI } from '@google/genai';
 
 interface ChatSimulatorProps {
@@ -108,7 +108,7 @@ export const ChatSimulator: React.FC<ChatSimulatorProps> = ({
         id: 'bot-' + Date.now(),
         sender: 'SplitSquad Bot',
         isBot: true,
-        text: `🧾 *AI Receipt Scanned & Logged!*\n\n• *Merchant:* ${receipt.merchant}\n• *Total Amount:* $${receipt.total.toFixed(2)}\n• *Category:* ${receipt.category}\n• *Paid By:* ${activeUser} (Split 50/50)\n\n✅ Logged to Google Sheets database!`,
+        text: `🧾 *AI Receipt Scanned & Logged!*\n\n• *Merchant:* ${receipt.merchant}\n• *Total Amount:* $${formatAmount(receipt.total)}\n• *Category:* ${receipt.category}\n• *Paid By:* ${activeUser} (Split 50/50)\n\n✅ Logged to Google Sheets database!`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
       onSendMessage(botReply);
@@ -214,7 +214,7 @@ export const ChatSimulator: React.FC<ChatSimulatorProps> = ({
             className="shrink-0 bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-200 px-2.5 py-1 rounded-lg transition flex items-center space-x-1 disabled:opacity-50"
           >
             <ImageIcon className="w-3 h-3 text-sky-400" />
-            <span>{r.merchant} (${r.total.toFixed(2)})</span>
+            <span>{r.merchant} (${formatAmount(r.total)})</span>
           </button>
         ))}
       </div>

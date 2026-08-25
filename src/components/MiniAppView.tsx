@@ -16,7 +16,7 @@ import {
   Trash2,
   X
 } from 'lucide-react';
-import { Expense, Settlement, RegisteredUser } from '../types';
+import { Expense, Settlement, RegisteredUser, formatAmount } from '../types';
 
 interface MiniAppViewProps {
   expenses: Expense[];
@@ -73,7 +73,6 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [exactShares, setExactShares] = useState<Record<string, string>>({});
   const [percentShares, setPercentShares] = useState<Record<string, string>>({});
   const [singleDebtor, setSingleDebtor] = useState<string>('');
-  const [category, setCategory] = useState('Food');
   
   // Toast & Modals
   const [showSuccessToast, setShowSuccessToast] = useState(false);
@@ -485,8 +484,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       shares: finalShares,
       percentages: finalPercentages,
       singleOwer: finalSingleOwer,
-      createdBy: activeUser,
-      category
+      createdBy: activeUser
     };
 
     const savedDesc = description.trim();
@@ -560,7 +558,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       active: true,
       success: false,
       title: 'Recording Settlement...',
-      subtitle: `Clearing balance of ${curr}${amt.toFixed(2)} between ${debtor} and ${creditor}...`
+      subtitle: `Clearing balance of ${curr}${formatAmount(amt)} between ${debtor} and ${creditor}...`
     });
 
     const startTime = Date.now();
@@ -588,14 +586,14 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     } finally {
       setSelectedDebtToSettle(null);
       setActionLoading({ active: false, success: false, title: '', subtitle: '' });
-      setToastMessage(`✅ Settled ${curr}${amt.toFixed(2)} between ${debtor} and ${creditor}!`);
+      setToastMessage(`✅ Settled ${curr}${formatAmount(amt)} between ${debtor} and ${creditor}!`);
       setShowSuccessToast(true);
       setTimeout(() => setShowSuccessToast(false), 3000);
     }
   };
 
   const exportCSV = () => {
-    const headers = ['Timestamp', 'Type', 'Description', 'Amount', 'Currency', 'PaidBy', 'SplitMode', 'Category', 'CreatedBy'];
+    const headers = ['Timestamp', 'Type', 'Description', 'Amount', 'Currency', 'PaidBy', 'SplitMode', 'CreatedBy'];
     const expenseRows = expenses.map(e => [
       e.timestamp,
       'Expense',
@@ -604,7 +602,6 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       e.currency || '₱',
       e.paidBy,
       e.splitMode,
-      e.category,
       e.createdBy
     ]);
 
@@ -616,7 +613,6 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       s.currency || '₱',
       s.payer,
       `Payer: ${s.payer} -> ${s.receiver}`,
-      'Transfer',
       s.payer
     ]);
 
@@ -637,7 +633,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   };
 
   return (
-    <div className="w-full max-w-md mx-auto min-h-screen text-[#1B1B19] flex flex-col justify-between p-4 relative font-sans">
+    <div className="w-full max-w-md mx-auto h-screen max-h-screen text-[#1B1B19] flex flex-col p-4 relative font-sans overflow-hidden box-border">
       
       {/* Toast Alert */}
       {showSuccessToast && (
@@ -656,7 +652,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       )}
 
       {/* Header */}
-      <header className="flex justify-between items-center pb-2 pt-0.5">
+      <header className="flex justify-between items-center pb-2 pt-0.5 shrink-0">
         <div className="flex items-center space-x-2">
           <h1 className="text-base font-bold tracking-tight text-[#1B1B19]">splitnest</h1>
           {chatId && (
@@ -713,17 +709,17 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                           : 'text-[#1B1B19]'
                     }`}>
                       {myNet > 0.009 ? '+' : myNet < -0.009 ? '-' : ''}
-                      {currency}{Math.abs(myNet).toFixed(2)}
+                      {currency}{formatAmount(Math.abs(myNet))}
                     </span>
                     <span className="text-xs text-[#1B1B19]/70 font-medium truncate">
                       {myCredits.length > 0 && myDebts.length === 0 && (
-                        `• ${myCredits.map(c => `${c.debtor} owes you ${c.currency}${c.amount.toFixed(2)}`).join(', ')}`
+                        `• ${myCredits.map(c => `${c.debtor} owes you ${c.currency}${formatAmount(c.amount)}`).join(', ')}`
                       )}
                       {myDebts.length > 0 && myCredits.length === 0 && (
-                        `• You owe ${myDebts.map(d => `${d.creditor} (${d.currency}${d.amount.toFixed(2)})`).join(', ')}`
+                        `• You owe ${myDebts.map(d => `${d.creditor} (${d.currency}${formatAmount(d.amount)})`).join(', ')}`
                       )}
                       {myCredits.length > 0 && myDebts.length > 0 && (
-                        `• +${currency}${totalOwedToMe.toFixed(2)} owed to you, -${currency}${totalOwedByMe.toFixed(2)} you owe`
+                        `• +${currency}${formatAmount(totalOwedToMe)} owed to you, -${currency}${formatAmount(totalOwedByMe)} you owe`
                       )}
                     </span>
                   </>
@@ -776,37 +772,20 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
               <div className="col-span-8">
                 <input
-                  type="number"
-                  step="0.01"
+                  type="text"
+                  inputMode="decimal"
+                  pattern="[0-9]*[.,]?[0-9]*"
                   placeholder="0.00"
                   value={amount}
-                  onChange={e => setAmount(e.target.value)}
+                  onChange={e => {
+                    const val = e.target.value;
+                    if (val === '' || /^\d*(\.|\,)?\d*$/.test(val)) {
+                      setAmount(val.replace(/,/g, '.'));
+                    }
+                  }}
                   required
                   className="w-full bg-white/60 border border-black/5 px-3.5 py-2.5 rounded-xl text-sm font-semibold font-mono text-[#1B1B19] placeholder-[#1B1B19]/40 focus:outline-none focus:bg-white focus:ring-2 focus:ring-[#4A6CF7]/20 transition"
                 />
-              </div>
-            </div>
-
-            {/* Category Selectable Tags */}
-            <div>
-              <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold mb-1.5">
-                Category
-              </label>
-              <div className="flex flex-wrap gap-1.5">
-                {['Food', 'Travel', 'Transport', 'Gift', 'Others'].map(cat => (
-                  <button
-                    key={cat}
-                    type="button"
-                    onClick={() => setCategory(cat)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition ${
-                      category === cat
-                        ? 'bg-[#1B1B19] border-[#1B1B19] text-white font-semibold shadow-sm'
-                        : 'bg-white/60 border-black/5 text-[#1B1B19]/70 hover:bg-white/90'
-                    }`}
-                  >
-                    {cat}
-                  </button>
-                ))}
               </div>
             </div>
 
@@ -872,19 +851,19 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             {/* Split Mode Selector */}
             <div>
               <div className="flex justify-between items-center mb-1">
-                <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/50">Split Mode</label>
+                <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/50">Split</label>
                 {(splitMode === 'Equal' || splitMode === '50/50 Equal') && availableUsers.length > 0 && (
                   <span className="text-[10px] font-mono text-[#1B1B19]/60 font-semibold">
-                    {availableUsers.length} members ({amount && Number(amount) > 0 ? `${currency}${(Number(amount) / availableUsers.length).toFixed(2)} each` : 'divided equally'})
+                    {availableUsers.length} members ({amount && Number(amount) > 0 ? `${currency}${formatAmount(Number(amount) / availableUsers.length)} each` : 'divided equally'})
                   </span>
                 )}
               </div>
               <div className="grid grid-cols-2 gap-1.5">
                 {[
-                  { id: 'Equal', label: 'Equal' },
-                  { id: 'Exact Amounts', label: 'Exact Amounts' },
+                  { id: 'Equal', label: 'Equally' },
+                  { id: 'Exact Amounts', label: 'Custom amounts' },
                   { id: 'Percentages', label: 'Percentages (%)' },
-                  { id: 'Single Payer (100% owed)', label: '100% Owed' }
+                  { id: 'Single Payer (100% owed)', label: '100% owed by...' }
                 ].map(mode => (
                   <button
                     key={mode.id}
@@ -909,14 +888,14 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                   <span>Equal Share ({availableUsers.length} members)</span>
                   <span>
                     {amount && Number(amount) > 0 
-                      ? `${currency}${(Number(amount) / availableUsers.length).toFixed(2)} / person` 
+                      ? `${currency}${formatAmount(Number(amount) / availableUsers.length)} / person` 
                       : 'Enter amount above'}
                   </span>
                 </div>
                 <div className="flex flex-wrap gap-1">
                   {availableUsers.map(u => {
                     const share = amount && Number(amount) > 0 
-                      ? (Number(amount) / availableUsers.length).toFixed(2) 
+                      ? formatAmount(Number(amount) / availableUsers.length) 
                       : '0.00';
                     const isPayer = u === (paidBy || activeUser);
                     return (
@@ -962,13 +941,16 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                           <span className="font-semibold">{currency}</span>
                         </div>
                         <input
-                          type="number"
-                          step="0.01"
+                          type="text"
+                          inputMode="decimal"
+                          pattern="[0-9]*[.,]?[0-9]*"
                           placeholder="0.00"
                           value={exactShares[u] ?? ''}
                           onChange={e => {
                             const val = e.target.value;
-                            setExactShares(prev => ({ ...prev, [u]: val }));
+                            if (val === '' || /^\d*(\.|\,)?\d*$/.test(val)) {
+                              setExactShares(prev => ({ ...prev, [u]: val.replace(/,/g, '.') }));
+                            }
                           }}
                           className="w-full bg-white border border-black/10 rounded-lg px-2 py-1 text-xs font-mono font-bold text-[#1B1B19] focus:outline-none focus:ring-1 focus:ring-[#1B1B19]"
                         />
@@ -987,12 +969,12 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                   return (
                     <div className="flex items-center justify-between text-[11px] font-mono pt-1 border-t border-black/5">
                       <span className="text-[#1B1B19]/60">
-                        Allocated: <strong className="text-[#1B1B19]">{currency}{totalAllocated.toFixed(2)}</strong> / {currency}{numAmt.toFixed(2)}
+                        Allocated: <strong className="text-[#1B1B19]">{currency}{formatAmount(totalAllocated)}</strong> / {currency}{formatAmount(numAmt)}
                       </span>
                       <span className={`font-semibold px-2 py-0.5 rounded ${
                         isMatch ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
                       }`}>
-                        {isMatch ? '✓ Balanced' : `Diff: ${diff > 0 ? '+' : ''}${currency}${diff.toFixed(2)}`}
+                        {isMatch ? '✓ Balanced' : `Diff: ${diff > 0 ? '+' : ''}${currency}${formatAmount(Math.abs(diff))}`}
                       </span>
                     </div>
                   );
@@ -1021,7 +1003,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                     const isPayer = u === (paidBy || activeUser);
                     const pct = parseFloat(percentShares[u] || '0') || 0;
                     const numAmt = parseFloat(amount) || 0;
-                    const calcAmount = numAmt > 0 ? ((numAmt * pct) / 100).toFixed(2) : '0.00';
+                    const calcAmount = numAmt > 0 ? formatAmount((numAmt * pct) / 100) : '0.00';
 
                     return (
                       <div key={u} className="bg-white/70 p-2 rounded-xl border border-black/5 space-y-1">
@@ -1031,13 +1013,16 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                         </div>
                         <div className="flex items-center gap-1">
                           <input
-                            type="number"
-                            step="0.1"
+                            type="text"
+                            inputMode="decimal"
+                            pattern="[0-9]*[.,]?[0-9]*"
                             placeholder="0"
                             value={percentShares[u] ?? ''}
                             onChange={e => {
                               const val = e.target.value;
-                              setPercentShares(prev => ({ ...prev, [u]: val }));
+                              if (val === '' || /^\d*(\.|\,)?\d*$/.test(val)) {
+                                setPercentShares(prev => ({ ...prev, [u]: val.replace(/,/g, '.') }));
+                              }
                             }}
                             className="w-full bg-white border border-black/10 rounded-lg px-2 py-1 text-xs font-mono font-bold text-[#1B1B19] focus:outline-none focus:ring-1 focus:ring-[#1B1B19]"
                           />
@@ -1181,7 +1166,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
                         <div className="flex items-center gap-2 shrink-0">
                           <span className="font-bold font-mono text-sm text-[#1B1B19]">
-                            {cb.currency}{cb.amount.toFixed(2)}
+                            {cb.currency}{formatAmount(cb.amount)}
                           </span>
                           <button
                             type="button"
@@ -1197,23 +1182,6 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                   })}
                 </div>
               )}
-            </div>
-
-            {/* Currency Breakdown Card */}
-            <div className="bg-white/70 backdrop-blur-md border border-black/5 p-4 rounded-[20px] shadow-sm space-y-2 text-xs">
-              <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold border-b border-black/5 pb-1.5">
-                Logged Expenses by Currency
-              </div>
-              {currencyBalances.map((cb, idx) => {
-                const currExpenses = expenses.filter(e => (e.currency || '₱') === cb.currency);
-                const totalAmt = currExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
-                return (
-                  <div key={idx} className="flex justify-between items-center py-1 text-[#1B1B19]/80 font-medium">
-                    <span>{cb.currency} Total ({currExpenses.length} items)</span>
-                    <span className="font-bold font-mono text-[#1B1B19]">{cb.currency}{totalAmt.toFixed(2)}</span>
-                  </div>
-                );
-              })}
             </div>
 
             {/* Recent Settlements */}
@@ -1233,7 +1201,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                           {s.method ? `via ${s.method} • ` : ''}{new Date(s.timestamp).toLocaleDateString()}
                         </p>
                       </div>
-                      <span className="font-bold font-mono text-[#1B1B19]">{s.currency || '₱'}{Number(s.amount).toFixed(2)}</span>
+                      <span className="font-bold font-mono text-[#1B1B19]">{s.currency || '₱'}{formatAmount(Number(s.amount))}</span>
                     </div>
                   ))}
                 </div>
@@ -1246,8 +1214,9 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         {activeTab === 'ledger' && (
           <div className="bg-white/70 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-sm space-y-3">
             <div className="flex items-center justify-between border-b border-black/5 pb-2">
+              {/* Expense History Header */}
               <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold">
-                Expense Ledger ({expenses.length})
+                Expense History ({expenses.length})
               </div>
               <button
                 type="button"
@@ -1268,11 +1237,8 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 {expenses.map((exp, idx) => (
                   <div key={idx} className="bg-white/60 p-3 rounded-xl border border-black/5 flex items-center justify-between text-xs">
                     <div className="space-y-0.5">
-                      <div className="flex items-center space-x-2">
+                      <div>
                         <span className="font-semibold text-[#1B1B19]">{exp.description}</span>
-                        <span className="text-[9px] bg-black/5 font-mono text-[#1B1B19]/70 px-1.5 py-0.5 rounded">
-                          {exp.category}
-                        </span>
                       </div>
                       <p className="text-[11px] text-[#1B1B19]/60">
                         Paid by <strong>{exp.paidBy}</strong> • {exp.splitMode}
@@ -1282,7 +1248,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
                     <div className="text-right">
                       <span className="font-bold font-mono text-[#1B1B19] text-sm">
-                        {exp.currency || '₱'}{Number(exp.amount).toFixed(2)}
+                        {exp.currency || '₱'}{formatAmount(Number(exp.amount))}
                       </span>
                     </div>
                   </div>
@@ -1334,7 +1300,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
               <div className="flex justify-between items-center text-[#1B1B19]/70 border-t border-black/5 pt-1.5">
                 <span>Total Balance:</span>
                 <span className="font-bold font-mono text-[#1B1B19] text-sm">
-                  {selectedDebtToSettle.currency}{selectedDebtToSettle.amount.toFixed(2)}
+                  {selectedDebtToSettle.currency}{formatAmount(selectedDebtToSettle.amount)}
                 </span>
               </div>
             </div>
@@ -1345,10 +1311,16 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 Amount Paid ({selectedDebtToSettle.currency})
               </label>
               <input
-                type="number"
-                step="0.01"
+                type="text"
+                inputMode="decimal"
+                pattern="[0-9]*[.,]?[0-9]*"
                 value={settleAmount}
-                onChange={e => setSettleAmount(e.target.value)}
+                onChange={e => {
+                  const val = e.target.value;
+                  if (val === '' || /^\d*(\.|\,)?\d*$/.test(val)) {
+                    setSettleAmount(val.replace(/,/g, '.'));
+                  }
+                }}
                 required
                 className="w-full bg-white border border-black/10 px-3.5 py-2 rounded-xl text-sm font-semibold font-mono text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20"
               />
@@ -1749,41 +1721,44 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       )}
 
       {/* Monospace Sticky Footer Navigation */}
-      <footer className="sticky bottom-0 bg-[#F8F7F4]/95 backdrop-blur-md border-t border-black/10 py-3 mt-auto z-40 grid grid-cols-3 gap-1 text-center font-mono text-[9px] uppercase tracking-wider">
+      <footer className="sticky bottom-0 bg-[#F8F7F4]/95 backdrop-blur-md border-t border-black/10 h-14 min-h-[56px] max-h-[56px] shrink-0 mt-auto z-40 grid grid-cols-3 gap-1.5 p-1.5 text-center font-mono text-[9px] uppercase tracking-wider box-border">
         <button
+          type="button"
           onClick={() => setActiveTab('new')}
-          className={`py-2 rounded-xl transition flex flex-col items-center justify-center ${
+          className={`h-full min-h-0 rounded-xl transition flex flex-col items-center justify-center select-none ${
             activeTab === 'new'
               ? 'bg-[#1B1B19] text-white font-bold shadow-sm'
               : 'text-[#1B1B19]/60 hover:text-[#1B1B19] hover:bg-black/5'
           }`}
         >
-          <span className="opacity-60 text-[8px]">[01]</span>
-          <span className="font-bold">NEW</span>
+          <PlusCircle className="w-3.5 h-3.5 mb-1 shrink-0" />
+          <span className="font-bold leading-none shrink-0">LOG</span>
         </button>
 
         <button
+          type="button"
           onClick={() => setActiveTab('balances')}
-          className={`py-2 rounded-xl transition flex flex-col items-center justify-center ${
+          className={`h-full min-h-0 rounded-xl transition flex flex-col items-center justify-center select-none ${
             activeTab === 'balances'
               ? 'bg-[#1B1B19] text-white font-bold shadow-sm'
               : 'text-[#1B1B19]/60 hover:text-[#1B1B19] hover:bg-black/5'
           }`}
         >
-          <span className="opacity-60 text-[8px]">[02]</span>
-          <span className="font-bold">SETTLE</span>
+          <Scale className="w-3.5 h-3.5 mb-1 shrink-0" />
+          <span className="font-bold leading-none shrink-0">SETTLE</span>
         </button>
 
         <button
+          type="button"
           onClick={() => setActiveTab('ledger')}
-          className={`py-2 rounded-xl transition flex flex-col items-center justify-center ${
+          className={`h-full min-h-0 rounded-xl transition flex flex-col items-center justify-center select-none ${
             activeTab === 'ledger'
               ? 'bg-[#1B1B19] text-white font-bold shadow-sm'
               : 'text-[#1B1B19]/60 hover:text-[#1B1B19] hover:bg-black/5'
           }`}
         >
-          <span className="opacity-60 text-[8px]">[03]</span>
-          <span className="font-bold">LEDGER</span>
+          <History className="w-3.5 h-3.5 mb-1 shrink-0" />
+          <span className="font-bold leading-none shrink-0">HISTORY</span>
         </button>
       </footer>
 
