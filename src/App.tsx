@@ -140,8 +140,17 @@ export default function App() {
     return saved;
   });
 
-  const [isOnlineGas, setIsOnlineGas] = useState<boolean>(false);
-  const [isInitialLoading, setIsInitialLoading] = useState<boolean>(true);
+  const [isOnlineGas, setIsOnlineGas] = useState<boolean>(true);
+  // Instant-Open (Stale-While-Revalidate):
+  // If we already have cached data in localStorage for this group, display it IMMEDIATELY without blocking the user!
+  const [isInitialLoading, setIsInitialLoading] = useState<boolean>(() => {
+    const initialChatId = getChatId();
+    if (!initialChatId) return false;
+    const cachedUsers = localStorage.getItem(`${STORAGE_KEYS.REGISTERED_USERS}_${initialChatId}`);
+    const cachedExp = localStorage.getItem(`${STORAGE_KEYS.EXPENSES}_${initialChatId}`);
+    // If local cache exists, skip full screen loader entirely
+    return !(cachedUsers || cachedExp);
+  });
 
   // Save to localStorage scoped by chatId when state changes
   useEffect(() => {
@@ -304,15 +313,15 @@ export default function App() {
       }
     }
 
-    // Always fetch fresh data + auto-sync Telegram API members on initial mount
+    // Fetch fresh data in background on initial mount (uses fast get_data which reads cached members)
     if (gasUrl) {
-      fetchGasData(gasUrl, currentChatId, true);
+      fetchGasData(gasUrl, currentChatId, false);
     }
 
-    // Safety fallback: dismiss loading screen after 2.5s maximum even on slow mobile networks
+    // Safety fallback: dismiss loading screen after 1.2s maximum even on slow mobile networks
     const fallbackTimer = setTimeout(() => {
       setIsInitialLoading(false);
-    }, 2500);
+    }, 1200);
 
     // Periodically sync every 8 seconds while Mini App is open
     const pollInterval = setInterval(() => {
@@ -427,6 +436,58 @@ export default function App() {
     }
   };
 
+  const handleRemoveMember = async (memberNameToRemove: string) => {
+    if (!memberNameToRemove) return;
+    const cleanTarget = memberNameToRemove.trim();
+    const targetLower = cleanTarget.toLowerCase().replace(/^@/, '');
+
+    // 1. Optimistic local state update
+    setRegisteredUsers(prev => prev.filter(u => {
+      const uName = (u.username || '').toLowerCase().replace(/^@/, '');
+      const fName = (u.firstName || u.name || '').toLowerCase();
+      const uId = String(u.userId || '').toLowerCase();
+      return uName !== targetLower && fName !== targetLower && uId !== targetLower;
+    }));
+
+    // If the active viewing user was the one removed, select another remaining member
+    if (activeUser.toLowerCase().replace(/^@/, '') === targetLower) {
+      const remaining = registeredUsers.filter(u => {
+        const uName = (u.username || '').toLowerCase().replace(/^@/, '');
+        const fName = (u.firstName || u.name || '').toLowerCase();
+        return uName !== targetLower && fName !== targetLower;
+      });
+      if (remaining.length > 0) {
+        setActiveUser(remaining[0].firstName || remaining[0].username || remaining[0].name || 'User');
+      }
+    }
+
+    // 2. Sync removal with Google Apps Script backend
+    if (gasUrl && gasUrl.startsWith('http')) {
+      try {
+        const currentChatId = chatId || getChatId();
+        const response = await fetch(gasUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'remove_member',
+            username: cleanTarget,
+            name: cleanTarget,
+            chatId: currentChatId
+          })
+        });
+        const result = await response.json();
+        if (result.status === 'success' && result.data) {
+          setIsOnlineGas(true);
+          if (Array.isArray(result.data.users)) {
+            setRegisteredUsers(result.data.users);
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to sync member removal with Google Apps Script backend:', err);
+      }
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#F8F7F4] text-[#1B1B19] font-sans flex flex-col selection:bg-[#4A6CF7] selection:text-white">
       {/* Centered Telegram Mini App View */}
@@ -461,6 +522,7 @@ export default function App() {
             onAddExpense={handleAddExpense}
             onSettleUp={handleSettleUp}
             onSyncMembers={handleSyncMembers}
+            onRemoveMember={handleRemoveMember}
             gasUrl={gasUrl}
             setGasUrl={setGasUrl}
             isOnlineGas={isOnlineGas}

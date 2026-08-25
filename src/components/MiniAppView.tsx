@@ -10,7 +10,11 @@ import {
   Sliders,
   Send,
   Settings,
-  RefreshCw
+  RefreshCw,
+  Users,
+  UserMinus,
+  Trash2,
+  X
 } from 'lucide-react';
 import { Expense, Settlement, RegisteredUser } from '../types';
 
@@ -23,6 +27,7 @@ interface MiniAppViewProps {
   onAddExpense: (expense: Omit<Expense, 'id' | 'timestamp'>) => void;
   onSettleUp: (settlement: Omit<Settlement, 'id' | 'timestamp'>) => void;
   onSyncMembers?: () => Promise<void> | void;
+  onRemoveMember?: (memberName: string) => Promise<void> | void;
   gasUrl: string;
   setGasUrl: (url: string) => void;
   isOnlineGas: boolean;
@@ -48,6 +53,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   onAddExpense,
   onSettleUp,
   onSyncMembers,
+  onRemoveMember,
   gasUrl,
   setGasUrl,
   isOnlineGas,
@@ -69,9 +75,13 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [singleDebtor, setSingleDebtor] = useState<string>('');
   const [category, setCategory] = useState('Food');
   
-  // Toast
+  // Toast & Modals
   const [showSuccessToast, setShowSuccessToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
+  const [showMembersModal, setShowMembersModal] = useState(false);
+  const [memberToRemove, setMemberToRemove] = useState<string | null>(null);
+  const [isRemovingMember, setIsRemovingMember] = useState(false);
+  const [removeToast, setRemoveToast] = useState<string | null>(null);
 
   // Individual Settle Up Modal State
   const [selectedDebtToSettle, setSelectedDebtToSettle] = useState<{
@@ -88,6 +98,49 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [isTestingUrl, setIsTestingUrl] = useState(false);
   const [testResult, setTestResult] = useState<{ status: 'success' | 'error'; message: string } | null>(null);
 
+  // Persistent tracking of manually removed members for this group
+  const removedStorageKey = `splitnest_removed_members_${chatId || 'default'}`;
+  const [removedMembers, setRemovedMembers] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem(removedStorageKey);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const handleConfirmRemoveMember = async (memberName: string) => {
+    if (!memberName) return;
+    setIsRemovingMember(true);
+    try {
+      const cleanTarget = memberName.trim();
+      const updatedRemoved = Array.from(new Set([...removedMembers, cleanTarget]));
+      setRemovedMembers(updatedRemoved);
+      try {
+        localStorage.setItem(removedStorageKey, JSON.stringify(updatedRemoved));
+      } catch (e) {}
+
+      // If the removed member was selected in paidBy, pick another member
+      if (paidBy.toLowerCase().replace(/^@/, '') === cleanTarget.toLowerCase().replace(/^@/, '')) {
+        const remaining = availableUsers.filter(u => u.toLowerCase().replace(/^@/, '') !== cleanTarget.toLowerCase().replace(/^@/, ''));
+        if (remaining.length > 0) {
+          setPaidBy(remaining[0]);
+        }
+      }
+
+      if (onRemoveMember) {
+        await onRemoveMember(cleanTarget);
+      }
+      setMemberToRemove(null);
+      setRemoveToast(`Removed ${cleanTarget} from group ledger.`);
+      setTimeout(() => setRemoveToast(null), 3500);
+    } catch (err) {
+      console.error('Failed to remove member:', err);
+    } finally {
+      setIsRemovingMember(false);
+    }
+  };
+
   useEffect(() => {
     setInputGasUrl(gasUrl);
   }, [gasUrl]);
@@ -99,8 +152,10 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     }
   }, [activeUser, paidBy]);
 
-  // Derive dynamic list of users (excluding bots and legacy placeholders)
+  // Derive dynamic list of users (excluding bots, placeholders, and manually removed members)
   const userSet = new Set<string>();
+  const removedLower = new Set(removedMembers.map(m => m.toLowerCase().replace(/^@/, '')));
+
   if (registeredUsers && registeredUsers.length > 0) {
     registeredUsers.forEach(u => {
       let name = '';
@@ -113,21 +168,34 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         if (isBot) return;
         name = fName || (uName ? `@${uName}` : '') || (u.userId ? `User ${u.userId}` : '');
       }
-      if (name && !name.toLowerCase().includes('bot') && name !== 'Alex' && name !== 'Sam') {
+      const cleanLower = name.trim().toLowerCase().replace(/^@/, '');
+      if (name && !name.toLowerCase().includes('bot') && name !== 'Alex' && name !== 'Sam' && !removedLower.has(cleanLower)) {
         userSet.add(name.trim());
       }
     });
   }
 
-  expenses.forEach(e => {
-    if (e.paidBy && !e.paidBy.toLowerCase().includes('bot') && e.paidBy !== 'Alex' && e.paidBy !== 'Sam') userSet.add(e.paidBy.trim());
-    if (e.createdBy && !e.createdBy.toLowerCase().includes('bot') && e.createdBy !== 'Alex' && e.createdBy !== 'Sam') userSet.add(e.createdBy.trim());
-  });
-  settlements.forEach(s => {
-    if (s.payer && !s.payer.toLowerCase().includes('bot') && s.payer !== 'Alex' && s.payer !== 'Sam') userSet.add(s.payer.trim());
-    if (s.receiver && !s.receiver.toLowerCase().includes('bot') && s.receiver !== 'Alex' && s.receiver !== 'Sam') userSet.add(s.receiver.trim());
-  });
-  if (activeUser && !activeUser.toLowerCase().includes('bot') && activeUser !== 'Alex' && activeUser !== 'Sam') {
+  // Fall back to expenses and settlements only if registeredUsers is empty
+  if (!registeredUsers || registeredUsers.length === 0) {
+    expenses.forEach(e => {
+      if (e.paidBy && !e.paidBy.toLowerCase().includes('bot') && e.paidBy !== 'Alex' && e.paidBy !== 'Sam' && !removedLower.has(e.paidBy.toLowerCase().replace(/^@/, ''))) {
+        userSet.add(e.paidBy.trim());
+      }
+      if (e.createdBy && !e.createdBy.toLowerCase().includes('bot') && e.createdBy !== 'Alex' && e.createdBy !== 'Sam' && !removedLower.has(e.createdBy.toLowerCase().replace(/^@/, ''))) {
+        userSet.add(e.createdBy.trim());
+      }
+    });
+    settlements.forEach(s => {
+      if (s.payer && !s.payer.toLowerCase().includes('bot') && s.payer !== 'Alex' && s.payer !== 'Sam' && !removedLower.has(s.payer.toLowerCase().replace(/^@/, ''))) {
+        userSet.add(s.payer.trim());
+      }
+      if (s.receiver && !s.receiver.toLowerCase().includes('bot') && s.receiver !== 'Alex' && s.receiver !== 'Sam' && !removedLower.has(s.receiver.toLowerCase().replace(/^@/, ''))) {
+        userSet.add(s.receiver.trim());
+      }
+    });
+  }
+
+  if (activeUser && !activeUser.toLowerCase().includes('bot') && activeUser !== 'Alex' && activeUser !== 'Sam' && !removedLower.has(activeUser.toLowerCase().replace(/^@/, ''))) {
     userSet.add(activeUser.trim());
   }
 
@@ -137,7 +205,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
   const availableUsers = Array.from(userSet).filter(Boolean);
   if (availableUsers.length === 0) {
-    if (activeUser && activeUser !== 'Alex' && activeUser !== 'Sam') {
+    if (activeUser && activeUser !== 'Alex' && activeUser !== 'Sam' && !removedLower.has(activeUser.toLowerCase().replace(/^@/, ''))) {
       availableUsers.push(activeUser);
     } else {
       availableUsers.push('Me');
@@ -491,6 +559,14 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         </div>
       )}
 
+      {/* Remove Member Toast Alert */}
+      {removeToast && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 max-w-[380px] w-[92%] z-50 bg-rose-950 text-white px-4 py-3 rounded-2xl shadow-xl flex items-center space-x-2 text-xs font-medium border border-rose-800 animate-in fade-in slide-in-from-top-2">
+          <UserMinus className="w-4 h-4 shrink-0 text-rose-400" />
+          <span className="truncate">{removeToast}</span>
+        </div>
+      )}
+
       {/* Header */}
       <header className="flex justify-between items-center pb-2 pt-0.5">
         <div className="flex items-center space-x-2">
@@ -505,12 +581,11 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         <div className="flex items-center space-x-1.5">
           <button
             type="button"
-            onClick={handleManualMemberSync}
-            disabled={isSyncingMembers}
-            title="Sync group members from Telegram Bot API"
-            className="text-[10px] font-mono font-medium px-2 py-1 bg-black/5 hover:bg-black/10 rounded-full text-[#1B1B19]/70 flex items-center space-x-1 border border-black/5 transition"
+            onClick={() => setShowMembersModal(true)}
+            title="View & manage group members"
+            className="text-[10px] font-mono font-medium px-2.5 py-1 bg-black/5 hover:bg-black/10 rounded-full text-[#1B1B19]/70 hover:text-[#1B1B19] flex items-center space-x-1.5 border border-black/5 transition cursor-pointer"
           >
-            <RefreshCw className={`w-3 h-3 ${isSyncingMembers ? 'animate-spin text-[#4A6CF7]' : ''}`} />
+            <Users className="w-3 h-3 text-[#1B1B19]/60" />
             <span>{availableUsers.length} {availableUsers.length === 1 ? 'member' : 'members'}</span>
           </button>
 
@@ -653,13 +728,24 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
                   Paid By ({availableUsers.length} members)
                 </label>
-                <button
-                  type="button"
-                  onClick={() => setShowAddCustomUser(!showAddCustomUser)}
-                  className="text-[10px] font-mono text-[#4A6CF7] hover:underline font-semibold"
-                >
-                  {showAddCustomUser ? 'Cancel' : '+ Add Name'}
-                </button>
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowMembersModal(true)}
+                    className="text-[10px] font-mono text-[#1B1B19]/60 hover:text-[#1B1B19] font-medium flex items-center space-x-1"
+                  >
+                    <Users className="w-2.5 h-2.5" />
+                    <span>Manage</span>
+                  </button>
+                  <span className="text-[#1B1B19]/20 text-[10px]">•</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddCustomUser(!showAddCustomUser)}
+                    className="text-[10px] font-mono text-[#4A6CF7] hover:underline font-semibold"
+                  >
+                    {showAddCustomUser ? 'Cancel' : '+ Add Name'}
+                  </button>
+                </div>
               </div>
 
               {showAddCustomUser && (
@@ -1387,6 +1473,133 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 className="w-full bg-black/5 hover:bg-black/10 text-[#1B1B19] py-2.5 rounded-xl font-semibold text-xs transition"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Group Members Management Modal */}
+      {showMembersModal && (
+        <div className="absolute inset-0 bg-black/40 backdrop-blur-md z-50 p-4 flex items-center justify-center">
+          <div className="bg-[#F8F7F4] border border-black/10 rounded-[32px] p-5 w-full max-w-sm space-y-3.5 shadow-2xl flex flex-col max-h-[85vh]">
+            <div className="flex items-center justify-between border-b border-black/5 pb-2.5">
+              <div className="flex items-center space-x-2">
+                <div className="w-8 h-8 rounded-xl bg-[#1B1B19] text-white flex items-center justify-center text-xs shadow-md">
+                  <Users className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-[#1B1B19] text-sm leading-tight">Group Members</h4>
+                  <p className="text-[10px] text-[#1B1B19]/60 font-mono">{availableUsers.length} active in ledger</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowMembersModal(false);
+                  setMemberToRemove(null);
+                }}
+                className="w-7 h-7 rounded-full bg-black/5 hover:bg-black/10 text-[#1B1B19]/60 hover:text-[#1B1B19] flex items-center justify-center transition"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* List of members with remove action */}
+            <div className="flex-1 overflow-y-auto space-y-2 pr-0.5 min-h-[120px] max-h-[300px]">
+              {availableUsers.length === 0 ? (
+                <div className="text-center py-6 text-xs text-[#1B1B19]/50 font-mono">
+                  No members found. Tap "Sync Telegram Members" below.
+                </div>
+              ) : (
+                availableUsers.map((member) => {
+                  const isCurrent = member === activeUser;
+                  return (
+                    <div
+                      key={member}
+                      className="bg-white/80 border border-black/5 rounded-2xl p-3 flex items-center justify-between shadow-xs hover:border-black/10 transition"
+                    >
+                      <div className="flex items-center space-x-2.5 min-w-0">
+                        <div className="w-8 h-8 rounded-xl bg-[#1B1B19]/5 text-[#1B1B19] font-bold text-xs flex items-center justify-center uppercase shrink-0">
+                          {member.replace(/^@/, '').substring(0, 2)}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center space-x-1.5">
+                            <p className="font-semibold text-xs text-[#1B1B19] truncate">{member}</p>
+                            {isCurrent && (
+                              <span className="text-[9px] font-mono px-1.5 py-0.5 bg-[#4A6CF7]/10 text-[#4A6CF7] rounded-full font-medium shrink-0">
+                                You
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-[#1B1B19]/50 font-mono truncate">
+                            {member.startsWith('@') ? 'Telegram handle' : 'Group member'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setMemberToRemove(member)}
+                        title={`Remove ${member} from ledger`}
+                        className="p-1.5 text-rose-500 hover:bg-rose-50 hover:text-rose-600 rounded-xl transition border border-transparent hover:border-rose-200 shrink-0 ml-2 cursor-pointer"
+                      >
+                        <UserMinus className="w-4 h-4" />
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* In-Modal Confirmation Warning when a member is selected to be removed */}
+            {memberToRemove && (
+              <div className="bg-rose-50 border border-rose-200 rounded-2xl p-3.5 space-y-2.5 text-xs">
+                <div className="flex items-start space-x-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-bold text-rose-900 leading-tight">Remove {memberToRemove}?</p>
+                    <p className="text-[11px] text-rose-700 mt-0.5 leading-snug">
+                      This will remove them from split dropdowns and sync the change to Google Sheets.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex space-x-2 pt-0.5">
+                  <button
+                    type="button"
+                    disabled={isRemovingMember}
+                    onClick={() => setMemberToRemove(null)}
+                    className="flex-1 bg-white hover:bg-rose-100/60 text-rose-900 border border-rose-200 py-1.5 rounded-xl font-medium text-xs transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isRemovingMember}
+                    onClick={() => handleConfirmRemoveMember(memberToRemove)}
+                    className="flex-1 bg-rose-600 hover:bg-rose-700 text-white py-1.5 rounded-xl font-semibold text-xs shadow-xs transition flex items-center justify-center space-x-1"
+                  >
+                    {isRemovingMember ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                    <span>{isRemovingMember ? 'Removing...' : 'Confirm Remove'}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Actions footer inside modal */}
+            <div className="pt-1 space-y-2">
+              <button
+                type="button"
+                disabled={isSyncingMembers}
+                onClick={async () => {
+                  setIsSyncingMembers(true);
+                  if (onSyncMembers) await onSyncMembers();
+                  setIsSyncingMembers(false);
+                }}
+                className="w-full bg-black/5 hover:bg-black/10 text-[#1B1B19] py-2.5 rounded-xl font-medium text-xs transition flex items-center justify-center space-x-1.5 font-mono"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-[#1B1B19]/70 ${isSyncingMembers ? 'animate-spin text-[#4A6CF7]' : ''}`} />
+                <span>{isSyncingMembers ? 'Syncing...' : 'Sync Telegram Members'}</span>
               </button>
             </div>
           </div>
