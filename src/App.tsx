@@ -134,7 +134,7 @@ export default function App() {
   const [gasUrl, setGasUrl] = useState<string>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.GAS_URL);
     if (!saved || saved.includes('AKfycbzBu8cufpEzEl9vZHTj4wajJn_Ax5bfFL9hN3yT5xg')) {
-      return (import.meta.env.VITE_GAS_URL as string) || DEFAULT_GAS_URL;
+      return ((import.meta as any).env?.VITE_GAS_URL as string) || DEFAULT_GAS_URL;
     }
     return saved;
   });
@@ -195,7 +195,7 @@ export default function App() {
   }, [registeredUsers]);
 
   // Fetch data from Google Apps Script endpoint if configured
-  const fetchGasData = useCallback(async (url: string, targetChatId?: string) => {
+  const fetchGasData = useCallback(async (url: string, targetChatId?: string, forceMemberSync = false) => {
     if (!url || !url.startsWith('http')) {
       setIsOnlineGas(false);
       return;
@@ -203,14 +203,18 @@ export default function App() {
 
     try {
       const currentChatId = targetChatId || getChatId();
+      const tg = (window as any).Telegram?.WebApp;
+      const tgUser = tg?.initDataUnsafe?.user;
+
+      const action = forceMemberSync ? 'sync_members' : 'get_data';
       const queryUrl = currentChatId 
-        ? `${url}${url.includes('?') ? '&' : '?'}action=get_data&chatId=${encodeURIComponent(currentChatId)}` 
-        : `${url}${url.includes('?') ? '&' : '?'}action=get_data`;
+        ? `${url}${url.includes('?') ? '&' : '?'}action=${action}&chatId=${encodeURIComponent(currentChatId)}` 
+        : `${url}${url.includes('?') ? '&' : '?'}action=${action}`;
 
       const response = await fetch(queryUrl);
       const text = await response.text();
 
-      // Check if response is Google Login HTML instead of JSON (happens when "Who has access" is not "Anyone")
+      // Check if response is Google Login HTML instead of JSON
       if (text.trim().startsWith('<') || text.includes('accounts.google.com')) {
         console.warn('Google Apps Script returned Google Sign-In HTML page. Make sure Web App "Who has access" is set to "Anyone".');
         setIsOnlineGas(false);
@@ -225,7 +229,7 @@ export default function App() {
         const fetchedSettlements = Array.isArray(result.data.settlements) ? result.data.settlements : [];
         const fetchedUsers: RegisteredUser[] = Array.isArray(result.data.users) ? [...result.data.users] : [];
 
-        // Also harvest any distinct names from expenses & settlements to ensure no friend is missed
+        // Also harvest any distinct names from expenses & settlements to ensure no member is missed
         const knownNames = new Set(fetchedUsers.map(u => (u.firstName || u.username || '').toLowerCase()));
         
         fetchedExpenses.forEach((e: Expense) => {
@@ -247,6 +251,9 @@ export default function App() {
         setExpenses(fetchedExpenses);
         setSettlements(fetchedSettlements);
         setRegisteredUsers(fetchedUsers);
+      } else if (result.status === 'success' && Array.isArray(result.users)) {
+        setIsOnlineGas(true);
+        setRegisteredUsers(result.users);
       } else {
         setIsOnlineGas(false);
       }
@@ -261,23 +268,29 @@ export default function App() {
     const currentChatId = chatId || getChatId();
 
     if (currentChatId) {
-      // Load local storage for this specific chatId
+      // Load local storage for this specific chatId (reset previous group's data to prevent cross-group leakage)
       const keyExpenses = `${STORAGE_KEYS.EXPENSES}_${currentChatId}`;
       const savedExp = localStorage.getItem(keyExpenses);
       if (savedExp) {
         try { setExpenses(JSON.parse(savedExp)); } catch (e) { setExpenses([]); }
+      } else {
+        setExpenses([]);
       }
 
       const keySettlements = `${STORAGE_KEYS.SETTLEMENTS}_${currentChatId}`;
       const savedSet = localStorage.getItem(keySettlements);
       if (savedSet) {
         try { setSettlements(JSON.parse(savedSet)); } catch (e) { setSettlements([]); }
+      } else {
+        setSettlements([]);
       }
 
       const keyUsers = `${STORAGE_KEYS.REGISTERED_USERS}_${currentChatId}`;
       const savedUsers = localStorage.getItem(keyUsers);
       if (savedUsers) {
         try { setRegisteredUsers(JSON.parse(savedUsers)); } catch (e) { setRegisteredUsers([]); }
+      } else {
+        setRegisteredUsers([]);
       }
 
       const keyUser = `${STORAGE_KEYS.ACTIVE_USER}_${currentChatId}`;
@@ -398,6 +411,12 @@ export default function App() {
     }
   };
 
+  const handleSyncMembers = async () => {
+    if (gasUrl) {
+      await fetchGasData(gasUrl, chatId || getChatId(), true);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#F8F7F4] text-[#1B1B19] font-sans flex flex-col selection:bg-[#4A6CF7] selection:text-white">
       {/* Centered Telegram Mini App View */}
@@ -410,6 +429,7 @@ export default function App() {
           setActiveUser={setActiveUser}
           onAddExpense={handleAddExpense}
           onSettleUp={handleSettleUp}
+          onSyncMembers={handleSyncMembers}
           gasUrl={gasUrl}
           setGasUrl={setGasUrl}
           isOnlineGas={isOnlineGas}

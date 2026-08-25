@@ -22,6 +22,7 @@ interface MiniAppViewProps {
   setActiveUser: (user: string) => void;
   onAddExpense: (expense: Omit<Expense, 'id' | 'timestamp'>) => void;
   onSettleUp: (settlement: Omit<Settlement, 'id' | 'timestamp'>) => void;
+  onSyncMembers?: () => Promise<void> | void;
   gasUrl: string;
   setGasUrl: (url: string) => void;
   isOnlineGas: boolean;
@@ -46,6 +47,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   setActiveUser,
   onAddExpense,
   onSettleUp,
+  onSyncMembers,
   gasUrl,
   setGasUrl,
   isOnlineGas,
@@ -58,7 +60,9 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState('₱'); // Default to Pesos
   const [paidBy, setPaidBy] = useState(activeUser);
-  const [isCustomUser, setIsCustomUser] = useState(false);
+  const [showAddCustomUser, setShowAddCustomUser] = useState(false);
+  const [customUserName, setCustomUserName] = useState('');
+  const [isSyncingMembers, setIsSyncingMembers] = useState(false);
   const [splitMode, setSplitMode] = useState<'50/50 Equal' | 'Exact Amounts' | 'Percentages' | 'Single Payer (100% owed)'>('50/50 Equal');
   const [exactA, setExactA] = useState('');
   const [exactB, setExactB] = useState('');
@@ -88,7 +92,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     }
   }, [activeUser, paidBy]);
 
-  // Derive dynamic list of users (excluding bots)
+  // Derive dynamic list of users (excluding bots and legacy placeholders)
   const userSet = new Set<string>();
   if (registeredUsers && registeredUsers.length > 0) {
     registeredUsers.forEach(u => {
@@ -120,7 +124,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     userSet.add(activeUser.trim());
   }
 
-  // Ensure legacy mock names Alex and Sam are not included
+  // Ensure legacy mock names Alex and Sam are excluded
   userSet.delete('Alex');
   userSet.delete('Sam');
 
@@ -132,6 +136,36 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       availableUsers.push('Me');
     }
   }
+
+  const handleManualMemberSync = async () => {
+    if (isSyncingMembers) return;
+    setIsSyncingMembers(true);
+    try {
+      if (onSyncMembers) {
+        await onSyncMembers();
+        setToastMessage('✅ Group members synced from Telegram API!');
+        setShowSuccessToast(true);
+        setTimeout(() => setShowSuccessToast(false), 3000);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsSyncingMembers(false);
+    }
+  };
+
+  const handleAddCustomUser = () => {
+    const trimmed = customUserName.trim();
+    if (trimmed && !trimmed.toLowerCase().includes('bot') && trimmed !== 'Alex' && trimmed !== 'Sam') {
+      setPaidBy(trimmed);
+      setActiveUser(trimmed);
+      setCustomUserName('');
+      setShowAddCustomUser(false);
+      setToastMessage(`Added ${trimmed} to group members!`);
+      setShowSuccessToast(true);
+      setTimeout(() => setShowSuccessToast(false), 2500);
+    }
+  };
 
   const otherUser = availableUsers.find(u => u !== paidBy) || (availableUsers.length > 1 ? availableUsers[1] : 'Group');
 
@@ -346,15 +380,34 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
       {/* Header */}
       <header className="flex justify-between items-center pb-2 pt-0.5">
-        <h1 className="text-base font-bold tracking-tight text-[#1B1B19]">splitnest</h1>
         <div className="flex items-center space-x-2">
+          <h1 className="text-base font-bold tracking-tight text-[#1B1B19]">splitnest</h1>
+          {chatId && (
+            <span className="text-[10px] font-mono font-semibold px-2 py-0.5 bg-black/5 text-[#1B1B19]/70 rounded-md border border-black/5">
+              {chatId.startsWith('-') ? `Group ${chatId.substring(0, 7)}...` : `Chat ${chatId.substring(0, 6)}...`}
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center space-x-1.5">
+          <button
+            type="button"
+            onClick={handleManualMemberSync}
+            disabled={isSyncingMembers}
+            title="Sync group members from Telegram Bot API"
+            className="text-[10px] font-mono font-medium px-2 py-1 bg-black/5 hover:bg-black/10 rounded-full text-[#1B1B19]/70 flex items-center space-x-1 border border-black/5 transition"
+          >
+            <RefreshCw className={`w-3 h-3 ${isSyncingMembers ? 'animate-spin text-[#4A6CF7]' : ''}`} />
+            <span>{availableUsers.length} {availableUsers.length === 1 ? 'member' : 'members'}</span>
+          </button>
+
           <button
             type="button"
             onClick={() => setShowSettingsModal(true)}
             className="text-[10px] font-mono font-medium px-2.5 py-1 bg-black/5 hover:bg-black/10 rounded-full text-[#1B1B19]/70 flex items-center space-x-1.5 border border-black/5 transition"
           >
             <span className={`w-1.5 h-1.5 rounded-full ${isOnlineGas ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`}></span>
-            <span>{isOnlineGas ? 'Sheets Synced' : 'Sync Settings'}</span>
+            <span>{isOnlineGas ? 'Synced' : 'Config'}</span>
             <Settings className="w-3 h-3 text-[#1B1B19]/60" />
           </button>
         </div>
@@ -467,15 +520,49 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             </div>
 
             {/* Paid By Selector */}
-            <div>
-              <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/50 mb-1">Paid By</label>
+            <div className="space-y-1.5">
+              <div className="flex justify-between items-center">
+                <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
+                  Paid By ({availableUsers.length} members)
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowAddCustomUser(!showAddCustomUser)}
+                  className="text-[10px] font-mono text-[#4A6CF7] hover:underline font-semibold"
+                >
+                  {showAddCustomUser ? 'Cancel' : '+ Add Name'}
+                </button>
+              </div>
+
+              {showAddCustomUser && (
+                <div className="p-2.5 bg-white/80 rounded-xl border border-black/5 flex items-center space-x-1.5">
+                  <input
+                    type="text"
+                    placeholder="Friend's Name (e.g. Chesco, Mark)"
+                    value={customUserName}
+                    onChange={e => setCustomUserName(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddCustomUser(); }}}
+                    className="flex-1 bg-white border border-black/10 px-2.5 py-1.5 rounded-lg text-xs font-medium text-[#1B1B19] focus:outline-none focus:ring-1 focus:ring-[#4A6CF7]"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddCustomUser}
+                    className="bg-[#1B1B19] text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-black transition"
+                  >
+                    Add
+                  </button>
+                </div>
+              )}
+
               <select
                 value={paidBy}
                 onChange={e => setPaidBy(e.target.value)}
                 className="w-full bg-white/60 border border-black/5 px-3 py-2.5 rounded-xl text-xs font-semibold text-[#1B1B19] focus:outline-none focus:bg-white transition"
               >
                 {availableUsers.map(u => (
-                  <option key={u} value={u}>{u}</option>
+                  <option key={u} value={u}>
+                    {u === activeUser ? `${u} (You)` : u}
+                  </option>
                 ))}
               </select>
             </div>

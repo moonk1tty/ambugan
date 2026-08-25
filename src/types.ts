@@ -20,6 +20,7 @@ export interface Expense {
   userBPercent?: number;
   createdBy: string;
   category: string;
+  chatId?: string;
 }
 
 export interface Settlement {
@@ -30,6 +31,7 @@ export interface Settlement {
   amount: number;
   currency?: string; // Default '₱'
   method: string;
+  chatId?: string;
 }
 
 export interface TelegramUser {
