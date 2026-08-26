@@ -31,11 +31,15 @@ var SHEET_USERS = "Users";
 
 var TELEGRAM_API_BASE = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN;
 
+// Cached Spreadsheet instance per execution
+var _cachedSpreadsheet = null;
+
 // ==============================================================================
-// 2. SPREADSHEET DATABASE INITIALIZATION & RECOVERY
+// 2. SPREADSHEET DATABASE INITIALIZATION & OPTIMIZED RECOVERY
 // ==============================================================================
 
 function getDbSpreadsheet() {
+  if (_cachedSpreadsheet) return _cachedSpreadsheet;
   var ss;
   if (SPREADSHEET_ID && SPREADSHEET_ID.trim() !== "" && SPREADSHEET_ID !== "YOUR_SPREADSHEET_ID_HERE") {
     try {
@@ -49,6 +53,7 @@ function getDbSpreadsheet() {
   }
 
   ensureSheetsExist(ss);
+  _cachedSpreadsheet = ss;
   return ss;
 }
 
@@ -61,9 +66,9 @@ function ensureSheetsExist(ss) {
     expSheet.appendRow([
       "Timestamp", "ID", "Description", "Amount", "Currency", "PaidBy", 
       "SplitMode", "UserAShare", "UserBShare", "UserAPercent", "UserBPercent", 
-      "CreatedBy", "Category", "ChatID"
+      "CreatedBy", "Category", "ChatID", "SplitData"
     ]);
-    try { expSheet.getRange(1, 1, 1, 14).setFontWeight("bold").setBackground("#e8f0fe"); } catch(e){}
+    try { expSheet.getRange(1, 1, 1, 15).setFontWeight("bold").setBackground("#e8f0fe"); } catch(e){}
   }
 
   var setSheet = ss.getSheetByName(SHEET_SETTLEMENTS);
@@ -90,7 +95,7 @@ function getSettlementsSheet() { return getDbSpreadsheet().getSheetByName(SHEET_
 function getUsersSheet() { return getDbSpreadsheet().getSheetByName(SHEET_USERS); }
 
 // ==============================================================================
-// 3. HTTP GET HANDLER (API & Webhook setup)
+// 3. HTTP GET HANDLER (API & Webhook setup & Queue Clearing)
 // ==============================================================================
 
 function doGet(e) {
@@ -99,9 +104,15 @@ function doGet(e) {
     var chatId = (e && e.parameter) ? (e.parameter.chatId || e.parameter.chat_id || "") : "";
     var cleanChatId = normalizeChatId(chatId);
 
+    // One-click queue clearance & webhook registration
+    if (action === "clear_queue" || action === "drop_updates" || action === "reset_webhook") {
+      var clearRes = clearTelegramWebhookQueue();
+      return createJsonResponse({ status: "success", message: "Telegram queue cleared & webhook reset", result: clearRes });
+    }
+
     if (action === "set_webhook") {
       var webhookRes = setWebhook();
-      return createJsonResponse({ status: "success", message: "Webhook registration executed", result: webhookRes });
+      return createJsonResponse({ status: "success", message: "Webhook registration executed with drop_pending_updates", result: webhookRes });
     }
 
     if (action === "get_webhook_info" || action === "webhook_info") {
@@ -129,6 +140,11 @@ function doGet(e) {
         spreadsheetId: SPREADSHEET_ID,
         botInfo: botInfo
       });
+    }
+
+    if (action === "clear_queue" || action === "flush_queue" || action === "reset_webhook") {
+      var queueRes = clearTelegramWebhookQueue();
+      return createJsonResponse({ status: "success", message: "Telegram queue purged successfully", result: queueRes });
     }
 
     if (action === "get_members" || action === "sync_members") {
@@ -161,8 +177,7 @@ function doGet(e) {
 // ==============================================================================
 
 function doPost(e) {
-  // CRITICAL (Telegram Webhook Best Practice):
-  // Return HTTP 200 OK fast and catch any uncaught exceptions so Telegram does not retry updates in an endless loop.
+  // Always return HTTP 200 OK fast so Telegram does not retry updates
   try {
     if (!e || !e.postData || !e.postData.contents) {
       return createJsonResponse({ ok: true, status: "empty_body" });
@@ -170,12 +185,12 @@ function doPost(e) {
 
     var payload = JSON.parse(e.postData.contents);
 
-    // CASE A: Mini App API Action (JSON payload from WebApp frontend)
+    // CASE A: Mini App API Action
     if (payload.action) {
       return handleMiniAppAction(payload);
     }
 
-    // CASE B: Telegram Webhook Update (Message, Member status update, etc.)
+    // CASE B: Telegram Webhook Update
     if (payload.update_id !== undefined) {
       return handleTelegramUpdate(payload);
     }
@@ -183,7 +198,6 @@ function doPost(e) {
     return createJsonResponse({ ok: true, status: "ignored" });
   } catch (err) {
     Logger.log("doPost Error: " + err.toString());
-    // Always return HTTP 200 JSON with ok: true so Telegram knows the webhook was delivered and stops retrying
     return createJsonResponse({ ok: true, error: err.toString() });
   }
 }
@@ -197,7 +211,6 @@ function handleMiniAppAction(payload) {
   var chatId = normalizeChatId(payload.chatId || "");
   var tgUser = payload.user || null;
 
-  // Auto-register user from MiniApp context if provided
   if (tgUser && chatId) {
     registerUsersBatch(chatId, [tgUser]);
   }
@@ -211,16 +224,13 @@ function handleMiniAppAction(payload) {
     var expense = payload.expense;
     if (!expense) return createJsonResponse({ status: "error", message: "Missing expense payload" });
 
-    // Save expense to Google Sheet scoped strictly by chatId
     saveExpenseToSheet(expense, chatId);
 
-    // Auto-register payer and creator
     if (chatId) {
       if (expense.paidBy) registerSimpleName(chatId, expense.paidBy);
       if (expense.createdBy) registerSimpleName(chatId, expense.createdBy);
     }
 
-    // Inform group chat via Telegram Bot notification
     if (chatId && (chatId.indexOf("-") === 0 || Number(chatId) < 0)) {
       sendExpenseGroupNotification(chatId, expense);
     }
@@ -229,20 +239,45 @@ function handleMiniAppAction(payload) {
     return createJsonResponse({ status: "success", message: "Expense logged successfully", data: updatedData });
   }
 
+  if (action === "edit_expense" || action === "update_expense") {
+    var expense = payload.expense;
+    if (!expense) return createJsonResponse({ status: "error", message: "Missing expense payload" });
+
+    updateExpenseInSheet(expense, chatId);
+
+    if (chatId) {
+      if (expense.paidBy) registerSimpleName(chatId, expense.paidBy);
+      if (expense.createdBy) registerSimpleName(chatId, expense.createdBy);
+    }
+
+    if (chatId && (chatId.indexOf("-") === 0 || Number(chatId) < 0)) {
+      sendExpenseUpdateGroupNotification(chatId, expense);
+    }
+
+    var updatedData = getAllData(chatId);
+    return createJsonResponse({ status: "success", message: "Expense updated successfully", data: updatedData });
+  }
+
+  if (action === "delete_expense" || action === "remove_expense") {
+    var expenseId = payload.id || payload.expenseId || (payload.expense ? payload.expense.id : "");
+    if (!expenseId) return createJsonResponse({ status: "error", message: "Missing expense ID" });
+
+    deleteExpenseFromSheet(expenseId, chatId);
+    var updatedData = getAllData(chatId);
+    return createJsonResponse({ status: "success", message: "Expense deleted successfully", data: updatedData });
+  }
+
   if (action === "settle_up") {
     var settlement = payload.settlement;
     if (!settlement) return createJsonResponse({ status: "error", message: "Missing settlement payload" });
 
-    // Save settlement to Google Sheet scoped strictly by chatId
     saveSettlementToSheet(settlement, chatId);
 
-    // Auto-register payer and receiver
     if (chatId) {
       if (settlement.payer) registerSimpleName(chatId, settlement.payer);
       if (settlement.receiver) registerSimpleName(chatId, settlement.receiver);
     }
 
-    // Inform group chat via Telegram Bot notification
     if (chatId && (chatId.indexOf("-") === 0 || Number(chatId) < 0)) {
       sendSettlementGroupNotification(chatId, settlement);
     }
@@ -263,27 +298,21 @@ function handleMiniAppAction(payload) {
 }
 
 // ==============================================================================
-// 6. TELEGRAM WEBHOOK HANDLER WITH ANTI-SPAM & ANTI-LOOP GUARDS
+// 6. TELEGRAM WEBHOOK HANDLER WITH ANTI-SPAM & FAST DISPATCH
 // ==============================================================================
 
 function handleTelegramUpdate(update) {
-  Logger.log("Incoming Telegram update: " + JSON.stringify(update));
-
-  // 1. UPDATE DEDUPLICATION:
-  // Prevent duplicate webhook updates from causing double sends
+  // 1. DEDUPLICATION: Drop duplicate update_ids
   if (update.update_id !== undefined) {
     try {
       var updateIdStr = String(update.update_id);
       var cache = CacheService.getScriptCache();
       var cachedUpdate = cache.get("TG_UPD_" + updateIdStr);
       if (cachedUpdate) {
-        Logger.log("Dropping duplicate update_id (cache hit): " + updateIdStr);
         return createJsonResponse({ ok: true, status: "duplicate_ignored" });
       }
-      cache.put("TG_UPD_" + updateIdStr, "1", 3600); // 1 hour is plenty for deduplication
-    } catch (e) {
-      Logger.log("Update deduplication check error: " + e.toString());
-    }
+      cache.put("TG_UPD_" + updateIdStr, "1", 3600);
+    } catch (e) {}
   }
 
   // 2. Bot added to a group or member status changed (my_chat_member)
@@ -296,33 +325,24 @@ function handleTelegramUpdate(update) {
     var cleanChatKey = chatId.replace(/[^a-zA-Z0-9_]/g, "_");
     var welcomePropKey = "JOIN_WELCOMED_" + cleanChatKey;
     var scriptProps = PropertiesService.getScriptProperties();
-    var cache = CacheService.getScriptCache();
 
-    // If bot was kicked or left, reset the welcome status
+    // If bot was kicked or left, clean up
     if (newStatus === "kicked" || newStatus === "left") {
       try {
         scriptProps.deleteProperty(welcomePropKey);
-        cache.remove(welcomePropKey);
       } catch(e){}
       return createJsonResponse({ ok: true, status: "bot_removed" });
     }
 
-    // Silently sync users in background
-    if (mcm.from && !mcm.from.is_bot) {
-      registerUsersBatch(chatId, [mcm.from]);
-    }
-    if (chatId.indexOf("-") === 0) {
-      fetchAndRegisterGroupAdmins(chatId);
-    }
-
-    // STRICT JOIN CHECK:
+    // STRICT JOIN CHECK: Only send ONCE when newly promoted from non-member to member/admin
     var wasInGroup = (oldStatus === "member" || oldStatus === "administrator" || oldStatus === "restricted");
     var isNowInGroup = (newStatus === "member" || newStatus === "administrator");
-    var alreadyWelcomed = (cache.get(welcomePropKey) === "1") || (scriptProps.getProperty(welcomePropKey) === "true");
+    var alreadyWelcomed = (scriptProps.getProperty(welcomePropKey) === "true");
 
     if (!wasInGroup && isNowInGroup && !alreadyWelcomed) {
-      cache.put(welcomePropKey, "1", 21600);
-      scriptProps.setProperty(welcomePropKey, "true");
+      try {
+        scriptProps.setProperty(welcomePropKey, "true");
+      } catch(e){}
 
       var welcomeText = "👋 <b>splitnest joined the group!</b>\n\n" +
                         "All group members and admins are ready to split expenses.\n" +
@@ -339,157 +359,108 @@ function handleTelegramUpdate(update) {
   }
 
   var chatId = String(msg.chat.id);
-  var isGroup = (chatId.indexOf("-") === 0 || msg.chat.type === "group" || msg.chat.type === "supergroup");
+  var cleanChatId = normalizeChatId(chatId);
 
-  // Always register sender for this specific group
-  if (msg.from && !msg.from.is_bot) {
-    registerUsersBatch(chatId, [msg.from]);
-  }
-
-  // Register any newly added members
-  if (msg.new_chat_members && msg.new_chat_members.length > 0) {
-    var newUsers = [];
-    for (var i = 0; i < msg.new_chat_members.length; i++) {
-      var member = msg.new_chat_members[i];
-      if (!member.is_bot) {
-        newUsers.push(member);
-      }
-    }
-    if (newUsers.length > 0) {
-      registerUsersBatch(chatId, newUsers);
-    }
-  }
-
-  // If in group, sync admins silently
-  if (isGroup) {
+  // Store group title if present
+  if (msg.chat && msg.chat.title) {
     try {
-      fetchAndRegisterGroupAdmins(chatId);
-    } catch(e) {}
+      var scriptProps = PropertiesService.getScriptProperties();
+      var propKey = "CHAT_TITLE_" + cleanChatId.replace(/[^a-zA-Z0-9_]/g, "_");
+      scriptProps.setProperty(propKey, msg.chat.title);
+    } catch (e) {}
+  }
+
+  // Auto-register sender into group roster
+  if (msg.from && !msg.from.is_bot && cleanChatId) {
+    try {
+      registerUsersBatch(cleanChatId, [msg.from]);
+    } catch (e) {}
   }
 
   var rawText = (msg.text || msg.caption || "").trim();
-  var lowerText = rawText.toLowerCase();
 
-  // If message has no text/caption (e.g. sticker, photo without caption), ignore
-  if (!lowerText) {
+  // If no text, ignore immediately without heavy processing
+  if (!rawText) {
     return createJsonResponse({ ok: true, status: "non_text_message" });
   }
 
-  // Extract command token without bot mention (e.g. "/balance@splitnest_bot" -> "/balance")
-  var firstToken = lowerText.split(/\s+/)[0];
-  var commandOnly = firstToken.split("@")[0];
+  var lowerText = rawText.toLowerCase().trim();
 
-  // 1. Handle /start command
+  // Normalize command token: e.g. "/balance@splitnest_bot" or "/balance" or "/bal"
+  var firstToken = lowerText.split(/\s+/)[0];
+  var commandOnly = firstToken.split("@")[0].trim();
+
+  // FAST COMMAND ROUTING:
+
+  // A. /start
   if (commandOnly === "/start" || commandOnly === "!start") {
     var startReply = "✨ <b>Welcome to splitnest!</b>\n\n" +
                      "Split bills, track shared expenses, and settle balances effortlessly with your group.\n\n" +
                      "👥 <b>Group Members Ready</b>: Tap below to open your group's expense ledger!";
     var resStart = sendTelegramMessage(chatId, startReply, getAppReplyMarkup(chatId));
-    Logger.log("Send /start result: " + JSON.stringify(resStart));
     return createJsonResponse({ ok: true, status: "start_handled", sendResult: resStart });
   }
 
-  // 2. Comprehensive Balance & Summary Prompt Detection
-  var isBalance = false;
-  var isSummary = false;
-
-  // Exact or prefix command matching: /balance, /balances, /summary, /report, /ledger, /debts
-  if (
-    commandOnly === "/balance" ||
-    commandOnly === "/balances" ||
-    commandOnly === "/bal" ||
-    commandOnly === "/ledger" ||
-    commandOnly === "/debts" ||
-    commandOnly === "/owes" ||
-    commandOnly === "!balance"
-  ) {
-    isBalance = true;
-  } else if (
-    commandOnly === "/summary" ||
-    commandOnly === "/summaries" ||
-    commandOnly === "/report" ||
-    commandOnly === "/stats" ||
-    commandOnly === "!summary"
-  ) {
-    isSummary = true;
-  }
-
-  // Natural language matching if not matched by slash command
-  if (!isBalance && !isSummary) {
-    var cleanWords = lowerText.replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-    if (
-      cleanWords === "balance" ||
-      cleanWords === "balances" ||
-      cleanWords === "bal" ||
-      cleanWords === "debts" ||
-      cleanWords === "ledger" ||
-      cleanWords === "who owes" ||
-      cleanWords === "check balance" ||
-      cleanWords === "show balance" ||
-      cleanWords === "group balance" ||
-      cleanWords.indexOf("who owes") !== -1 ||
-      cleanWords.indexOf("how much do i owe") !== -1 ||
-      cleanWords.indexOf("how much i owe") !== -1 ||
-      cleanWords.indexOf("check balance") !== -1 ||
-      cleanWords.indexOf("show balance") !== -1 ||
-      cleanWords.indexOf("group balance") !== -1
-    ) {
-      isBalance = true;
-    } else if (
-      cleanWords === "summary" ||
-      cleanWords === "summaries" ||
-      cleanWords === "report" ||
-      cleanWords === "stats" ||
-      cleanWords === "total spent" ||
-      cleanWords === "group summary" ||
-      cleanWords.indexOf("group summary") !== -1 ||
-      cleanWords.indexOf("show summary") !== -1 ||
-      cleanWords.indexOf("expense report") !== -1 ||
-      cleanWords.indexOf("total spent") !== -1
-    ) {
-      isSummary = true;
-    }
-  }
-
-  if (isBalance || isSummary) {
-    try {
-      var summaryText = getGroupBalanceTextSummary(chatId, isSummary);
-      var sendRes = sendTelegramMessage(chatId, summaryText, getAppReplyMarkup(chatId));
-      Logger.log("Send balance/summary response: " + JSON.stringify(sendRes));
-      return createJsonResponse({ ok: true, status: "balance_summary_handled", sendResult: sendRes });
-    } catch (err) {
-      Logger.log("Error generating balance summary: " + err.toString());
-      // Fallback simple message if error occurred
-      var fallbackMsg = "⚠️ Could not retrieve balance right now. Please tap below to open the Mini App!";
-      sendTelegramMessage(chatId, fallbackMsg, getAppReplyMarkup(chatId));
-      return createJsonResponse({ ok: true, error: err.toString() });
-    }
-  }
-
-  // 3. Handle /help command
+  // B. /help
   if (commandOnly === "/help" || commandOnly === "!help" || lowerText === "help") {
-    var helpText = "📖 <b>splitnest Bot Commands & Prompts:</b>\n\n" +
-                   "• <code>/balance</code> or <i>\"balance\"</i> - View net balances & who owes whom\n" +
-                   "• <code>/summary</code> or <i>\"summary\"</i> - View total group spending & recent expense breakdown\n" +
-                   "• <code>/start</code> - Sync group members & open Mini App\n" +
+    var helpText = "📖 <b>splitnest Bot Commands:</b>\n\n" +
+                   "• <code>/balance</code> - View net balances & who owes whom\n" +
+                   "• <code>/summary</code> - View total group spending & recent expense breakdown\n" +
+                   "• <code>/start</code> - Open Mini App & ledger\n" +
                    "• <code>/help</code> - Show this guide\n\n" +
                    "💡 <i>Tip: Tap the button below anytime to log expenses or settle up!</i>";
     var helpRes = sendTelegramMessage(chatId, helpText, getAppReplyMarkup(chatId));
     return createJsonResponse({ ok: true, status: "help_handled", sendResult: helpRes });
   }
 
+  // C. /balance and /summary
+  var isBalance = (
+    commandOnly === "/balance" ||
+    commandOnly === "/balances" ||
+    commandOnly === "/bal" ||
+    commandOnly === "/ledger" ||
+    commandOnly === "/debts" ||
+    commandOnly === "/owes" ||
+    commandOnly === "!balance" ||
+    lowerText === "balance" ||
+    lowerText === "balances" ||
+    lowerText === "who owes" ||
+    lowerText.indexOf("check balance") !== -1 ||
+    lowerText.indexOf("group balance") !== -1 ||
+    lowerText.indexOf("how much do i owe") !== -1
+  );
+
+  var isSummary = (
+    commandOnly === "/summary" ||
+    commandOnly === "/summaries" ||
+    commandOnly === "/report" ||
+    commandOnly === "/stats" ||
+    commandOnly === "!summary" ||
+    lowerText === "summary" ||
+    lowerText === "group summary" ||
+    lowerText === "total spent"
+  );
+
+  if (isBalance || isSummary) {
+    try {
+      var summaryText = getGroupBalanceTextSummary(chatId, isSummary);
+      var sendRes = sendTelegramMessage(chatId, summaryText, getAppReplyMarkup(chatId));
+      return createJsonResponse({ ok: true, status: "balance_summary_handled", sendResult: sendRes });
+    } catch (err) {
+      Logger.log("Error generating balance summary: " + err.toString());
+      var fallbackMsg = "⚠️ Could not retrieve balance right now. Please tap below to open the Mini App!";
+      sendTelegramMessage(chatId, fallbackMsg, getAppReplyMarkup(chatId));
+      return createJsonResponse({ ok: true, error: err.toString() });
+    }
+  }
+
   return createJsonResponse({ ok: true, status: "message_processed" });
 }
 
 // ==============================================================================
-// 7. LIVE TELEGRAM API MEMBER FETCHING (DO NOT RELY ONLY ON SHEET)
+// 7. LIVE TELEGRAM API MEMBER FETCHING
 // ==============================================================================
 
-/**
- * Queries Telegram Bot API (getChatAdministrators) to discover
- * group members and admins directly from Telegram.
- * Uses CacheService to avoid slow blocking UrlFetch calls on every page load.
- */
 function fetchAndRegisterGroupAdmins(chatId, force) {
   if (!chatId) return [];
   var cleanChatId = normalizeChatId(chatId);
@@ -530,7 +501,6 @@ function fetchAndRegisterGroupAdmins(chatId, force) {
       if (adminUsers.length > 0) {
         registerUsersBatch(cleanChatId, adminUsers);
       }
-      // Cache admins for 15 minutes to make subsequent app openings lightning fast
       cache.put(cacheKey, JSON.stringify(adminUsers), 900);
       return adminUsers;
     }
@@ -540,9 +510,39 @@ function fetchAndRegisterGroupAdmins(chatId, force) {
   return [];
 }
 
-/**
- * Checks if a user has been explicitly removed by an admin for this group.
- */
+function getChatTitleFromTelegram(chatId) {
+  if (!chatId) return "";
+  var cleanChatId = normalizeChatId(chatId);
+  var scriptProps = PropertiesService.getScriptProperties();
+  var propKey = "CHAT_TITLE_" + cleanChatId.replace(/[^a-zA-Z0-9_]/g, "_");
+  var savedTitle = scriptProps.getProperty(propKey);
+  if (savedTitle) return savedTitle;
+
+  // If group chat, query Telegram Bot API getChat
+  if (cleanChatId.indexOf("-") === 0) {
+    try {
+      var url = TELEGRAM_API_BASE + "/getChat";
+      var payload = { chat_id: cleanChatId };
+      var options = {
+        method: "post",
+        contentType: "application/json",
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true
+      };
+      var res = UrlFetchApp.fetch(url, options);
+      var json = JSON.parse(res.getContentText());
+      if (json.ok && json.result && json.result.title) {
+        var title = json.result.title;
+        scriptProps.setProperty(propKey, title);
+        return title;
+      }
+    } catch (e) {
+      Logger.log("getChatTitleFromTelegram error: " + e.toString());
+    }
+  }
+  return "";
+}
+
 function isUserBlacklisted(chatId, identifier) {
   if (!identifier) return false;
   try {
@@ -559,11 +559,6 @@ function isUserBlacklisted(chatId, identifier) {
   return false;
 }
 
-/**
- * Removes a user from the Users sheet for a specific chatId.
- * Matches by userId, username, or name/firstName.
- * Also stores into ScriptProperties blacklist for this chat to prevent auto-re-adding on sync.
- */
 function removeUserFromChat(chatId, identifier) {
   if (!identifier) return false;
   var cleanChatId = normalizeChatId(chatId);
@@ -586,12 +581,10 @@ function removeUserFromChat(chatId, identifier) {
     }
   }
 
-  // Delete from bottom up
   for (var r = rowsToDelete.length - 1; r >= 0; r--) {
     sheet.deleteRow(rowsToDelete[r]);
   }
 
-  // Save to blacklist
   try {
     var scriptProps = PropertiesService.getScriptProperties();
     var blacklistKey = "BLACKLIST_" + (cleanChatId ? cleanChatId.replace(/[^a-zA-Z0-9_]/g, "_") : "GLOBAL");
@@ -605,9 +598,6 @@ function removeUserFromChat(chatId, identifier) {
   return true;
 }
 
-/**
- * Registers an array of Telegram user objects into the Users sheet for this specific chatId.
- */
 function registerUsersBatch(chatId, users) {
   if (!users || users.length === 0) return;
   var sheet = getUsersSheet();
@@ -636,7 +626,6 @@ function registerUsersBatch(chatId, users) {
 
     var nameKey = firstName.toLowerCase();
 
-    // Skip if user was explicitly removed/blacklisted
     if (isUserBlacklisted(cleanChatId, userIdStr) || isUserBlacklisted(cleanChatId, username) || isUserBlacklisted(cleanChatId, firstName)) {
       continue;
     }
@@ -649,9 +638,6 @@ function registerUsersBatch(chatId, users) {
   }
 }
 
-/**
- * Registers a single user display name into the sheet if not already present.
- */
 function registerSimpleName(chatId, name) {
   if (!name || !name.trim()) return;
   var cleanName = name.trim();
@@ -664,79 +650,34 @@ function registerSimpleName(chatId, name) {
 }
 
 // ==============================================================================
-// 8. STRICT GROUP DATA RETRIEVAL (GROUP ISOLATION)
+// 8. HIGH-PERFORMANCE GROUP DATA RETRIEVAL
 // ==============================================================================
 
 function getAllData(chatId) {
   var cleanChatId = normalizeChatId(chatId);
+  var ss = getDbSpreadsheet();
 
-  // 1. Query Telegram Bot API live to get all group admins/members
-  var liveTelegramMembers = [];
-  if (cleanChatId && (cleanChatId.indexOf("-") === 0 || Number(cleanChatId) < 0)) {
-    try {
-      liveTelegramMembers = fetchAndRegisterGroupAdmins(cleanChatId);
-    } catch (e) {
-      Logger.log("Admin sync in getAllData failed: " + e.toString());
-    }
-  }
+  // Load all sheets in a single execution
+  var userSheet = ss.getSheetByName(SHEET_USERS);
+  var expSheet = ss.getSheetByName(SHEET_EXPENSES);
+  var setSheet = ss.getSheetByName(SHEET_SETTLEMENTS);
 
-  // 2. Fetch users strictly belonging to this chatId
-  var users = getUsersForChat(cleanChatId);
+  var userData = userSheet ? userSheet.getDataRange().getValues() : [];
+  var expData = expSheet ? expSheet.getDataRange().getValues() : [];
+  var setData = setSheet ? setSheet.getDataRange().getValues() : [];
 
-  // If sheet was empty but Telegram API returned members, map them directly into users
-  if (users.length === 0 && liveTelegramMembers.length > 0) {
-    for (var m = 0; m < liveTelegramMembers.length; m++) {
-      var tm = liveTelegramMembers[m];
-      var tmName = (tm.first_name || "") + (tm.last_name ? (" " + tm.last_name) : "");
-      tmName = tmName.trim() || (tm.username ? "@" + tm.username : ("User " + tm.id));
-      users.push({
-        userId: String(tm.id),
-        username: tm.username ? "@" + tm.username : "",
-        firstName: tmName,
-        name: tmName,
-        chatId: cleanChatId,
-        lastSeen: new Date().toISOString()
-      });
-    }
-  }
-
-  // 3. Fetch expenses strictly belonging to this chatId
-  var expenses = getExpensesForChat(cleanChatId);
-
-  // 4. Fetch settlements strictly belonging to this chatId
-  var settlements = getSettlementsForChat(cleanChatId);
-
-  return {
-    chatId: cleanChatId,
-    users: users,
-    expenses: expenses,
-    settlements: settlements
-  };
-}
-
-/**
- * Returns users strictly belonging to chatId (No data bleeding from other groups).
- */
-function getUsersForChat(chatId) {
-  var cleanChatId = normalizeChatId(chatId);
-  var sheet = getUsersSheet();
-  var data = sheet.getDataRange().getValues();
   var usersList = [];
   var seen = {};
 
-  for (var i = 1; i < data.length; i++) {
-    var row = data[i];
+  for (var i = 1; i < userData.length; i++) {
+    var row = userData[i];
     var uId = String(row[0] || "").trim();
     var uName = String(row[1] || "").trim();
     var fName = String(row[2] || "").trim();
     var cId = normalizeChatId(row[3]);
     var lastSeen = String(row[4] || "");
 
-    // STRICT GROUP ISOLATION FILTER:
-    // If cleanChatId is specified, only include rows matching this cleanChatId
-    if (cleanChatId && cId !== cleanChatId) {
-      continue;
-    }
+    if (cleanChatId && cId !== cleanChatId) continue;
 
     var display = fName || uName || (uId ? ("User " + uId) : "");
     if (!display || display.toLowerCase().includes("bot") || display === "Alex" || display === "Sam") continue;
@@ -756,120 +697,94 @@ function getUsersForChat(chatId) {
     }
   }
 
-  // Also include any user who paid or created an expense in this specific group (if not removed)
-  try {
-    var expData = getExpensesSheet().getDataRange().getValues();
-    for (var j = 1; j < expData.length; j++) {
-      var expChatId = normalizeChatId(expData[j][13]);
-      if (cleanChatId && expChatId !== cleanChatId) continue;
+  // Parse expenses
+  var expenses = [];
+  for (var e = 1; e < expData.length; e++) {
+    var erow = expData[e];
+    var expId = String(erow[1] || ("EXP-" + e)).trim();
+    if (!expId) continue;
+    var expChatId = normalizeChatId(erow[13]);
 
-      var paidBy = String(expData[j][5] || "").trim();
-      var createdBy = String(expData[j][11] || "").trim();
-      [paidBy, createdBy].forEach(function(n) {
-        if (n && !n.toLowerCase().includes("bot") && n !== "Alex" && n !== "Sam" && !isUserBlacklisted(cleanChatId, n) && !seen[n.toLowerCase()]) {
-          seen[n.toLowerCase()] = true;
-          usersList.push({
-            userId: "EXP-" + n.replace(/[^a-zA-Z0-9]/g, ""),
-            username: "",
-            firstName: n,
-            name: n,
-            chatId: cleanChatId,
-            lastSeen: ""
-          });
-        }
-      });
-    }
-  } catch(err) {}
+    if (cleanChatId && expChatId !== cleanChatId) continue;
 
-  return usersList;
-}
-
-/**
- * Returns expenses strictly belonging to chatId (No data bleeding from other groups).
- */
-function getExpensesForChat(chatId) {
-  var cleanChatId = normalizeChatId(chatId);
-  var sheet = getExpensesSheet();
-  var data = sheet.getDataRange().getValues();
-  var list = [];
-
-  for (var i = 1; i < data.length; i++) {
-    var row = data[i];
-    var id = String(row[1] || ("EXP-" + i)).trim();
-    if (!id) continue;
-    var cId = normalizeChatId(row[13]);
-
-    // STRICT GROUP ISOLATION FILTER:
-    if (cleanChatId && cId !== cleanChatId) {
-      continue;
-    }
+    var paidBy = String(erow[5] || "").trim();
+    var createdBy = String(erow[11] || "").trim();
+    [paidBy, createdBy].forEach(function(n) {
+      if (n && !n.toLowerCase().includes("bot") && n !== "Alex" && n !== "Sam" && !isUserBlacklisted(cleanChatId, n) && !seen[n.toLowerCase()]) {
+        seen[n.toLowerCase()] = true;
+        usersList.push({
+          userId: "EXP-" + n.replace(/[^a-zA-Z0-9]/g, ""),
+          username: "",
+          firstName: n,
+          name: n,
+          chatId: cleanChatId,
+          lastSeen: ""
+        });
+      }
+    });
 
     var expItem = {
-      id: id,
-      timestamp: String(row[0] || ""),
-      description: String(row[2] || "Expense"),
-      amount: Number(row[3]) || 0,
-      currency: String(row[4] || "₱"),
-      paidBy: String(row[5] || ""),
-      splitMode: String(row[6] || "50/50 Equal"),
-      userAShare: row[7] !== "" ? Number(row[7]) : undefined,
-      userBShare: row[8] !== "" ? Number(row[8]) : undefined,
-      userAPercent: row[9] !== "" ? Number(row[9]) : undefined,
-      userBPercent: row[10] !== "" ? Number(row[10]) : undefined,
-      createdBy: String(row[11] || ""),
-      category: String(row[12] || "General"),
-      chatId: cId
+      id: expId,
+      timestamp: String(erow[0] || ""),
+      description: String(erow[2] || "Expense"),
+      amount: Number(erow[3]) || 0,
+      currency: String(erow[4] || "₱"),
+      paidBy: paidBy,
+      splitMode: String(erow[6] || "50/50 Equal"),
+      userAShare: erow[7] !== "" ? Number(erow[7]) : undefined,
+      userBShare: erow[8] !== "" ? Number(erow[8]) : undefined,
+      userAPercent: erow[9] !== "" ? Number(erow[9]) : undefined,
+      userBPercent: erow[10] !== "" ? Number(erow[10]) : undefined,
+      createdBy: createdBy,
+      category: String(erow[12] || "General"),
+      chatId: expChatId
     };
 
-    // Parse multi-member split data from column 14 (if present)
-    if (row[14]) {
+    if (erow[14]) {
       try {
-        var parsedSplit = JSON.parse(row[14]);
+        var parsedSplit = JSON.parse(erow[14]);
         if (parsedSplit.shares) expItem.shares = parsedSplit.shares;
         if (parsedSplit.percentages) expItem.percentages = parsedSplit.percentages;
         if (parsedSplit.singleOwer) expItem.singleOwer = parsedSplit.singleOwer;
-      } catch (e) {}
+        if (parsedSplit.splitMembers && Array.isArray(parsedSplit.splitMembers)) expItem.splitMembers = parsedSplit.splitMembers;
+      } catch (ex) {}
     }
 
-    list.push(expItem);
+    expenses.push(expItem);
   }
 
-  return list.reverse(); // newest first
-}
+  // Parse settlements
+  var settlements = [];
+  for (var s = 1; s < setData.length; s++) {
+    var srow = setData[s];
+    var setId = String(srow[1] || ("SET-" + s)).trim();
+    if (!setId) continue;
+    var setChatId = normalizeChatId(srow[7]);
 
-/**
- * Returns settlements strictly belonging to chatId (No data bleeding from other groups).
- */
-function getSettlementsForChat(chatId) {
-  var cleanChatId = normalizeChatId(chatId);
-  var sheet = getSettlementsSheet();
-  var data = sheet.getDataRange().getValues();
-  var list = [];
+    if (cleanChatId && setChatId !== cleanChatId) continue;
 
-  for (var i = 1; i < data.length; i++) {
-    var row = data[i];
-    var id = String(row[1] || ("SET-" + i)).trim();
-    if (!id) continue;
-    var cId = normalizeChatId(row[7]);
-
-    // STRICT GROUP ISOLATION FILTER:
-    if (cleanChatId && cId !== cleanChatId) {
-      continue;
-    }
-
-    list.push({
-      id: id,
-      timestamp: String(row[0] || ""),
-      payer: String(row[2] || ""),
-      receiver: String(row[3] || ""),
-      amount: Number(row[4]) || 0,
-      currency: String(row[5] || "₱"),
-      method: String(row[6] || "Cash"),
-      chatId: cId
+    settlements.push({
+      id: setId,
+      timestamp: String(srow[0] || ""),
+      payer: String(srow[2] || ""),
+      receiver: String(srow[3] || ""),
+      amount: Number(srow[4]) || 0,
+      currency: String(srow[5] || "₱"),
+      method: String(srow[6] || "Cash"),
+      chatId: setChatId
     });
   }
 
-  return list.reverse(); // newest first
+  var groupTitle = getChatTitleFromTelegram(cleanChatId);
+
+  return {
+    chatId: cleanChatId,
+    groupTitle: groupTitle,
+    chatTitle: groupTitle,
+    users: usersList,
+    expenses: expenses.reverse(),
+    settlements: settlements.reverse()
+  };
 }
 
 // ==============================================================================
@@ -893,14 +808,14 @@ function saveExpenseToSheet(exp, chatId) {
   var category = exp.category || "General";
   var cleanChatId = normalizeChatId(chatId || exp.chatId || "");
 
-  // Multi-member split json
   var splitData = "";
-  if (exp.shares || exp.percentages || exp.singleOwer) {
+  if (exp.shares || exp.percentages || exp.singleOwer || exp.splitMembers) {
     try {
       splitData = JSON.stringify({
         shares: exp.shares,
         percentages: exp.percentages,
-        singleOwer: exp.singleOwer
+        singleOwer: exp.singleOwer,
+        splitMembers: exp.splitMembers
       });
     } catch (e) {}
   }
@@ -912,9 +827,6 @@ function saveExpenseToSheet(exp, chatId) {
   ]);
 }
 
-/**
- * Sends a clean Telegram group message detailing the newly logged expense.
- */
 function sendExpenseGroupNotification(chatId, exp) {
   var currency = exp.currency || "₱";
   var amountFormatted = currency + Number(exp.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -925,7 +837,13 @@ function sendExpenseGroupNotification(chatId, exp) {
 
   var splitDetails = "";
   if (splitMode === "Equal" || splitMode === "50/50 Equal") {
-    splitDetails = "• <b>Split</b>: Divided equally among group members";
+    if (exp.splitMembers && Array.isArray(exp.splitMembers) && exp.splitMembers.length > 0) {
+      var perPerson = currency + (Number(exp.amount || 0) / exp.splitMembers.length).toFixed(2);
+      var memberNames = exp.splitMembers.map(escapeHtml).join(", ");
+      splitDetails = "• <b>Split (Equal among " + exp.splitMembers.length + ")</b>: " + memberNames + " (" + perPerson + " each)";
+    } else {
+      splitDetails = "• <b>Split</b>: Divided equally among group members";
+    }
   } else if (splitMode === "Exact Amounts") {
     if (exp.shares && Object.keys(exp.shares).length > 0) {
       var shareEntries = [];
@@ -953,14 +871,141 @@ function sendExpenseGroupNotification(chatId, exp) {
     splitDetails = "• <b>Split</b>: " + splitMode;
   }
 
-  var msg = "🧾 <b>New Expense Logged</b>\n" +
+  var msg = "🧾 <b>New expense logged!</b>\n" +
             "━━━━━━━━━━━━━\n" +
-            "🏷️ <b>Item</b>: " + escapeHtml(description) + " (" + escapeHtml(category) + ")\n" +
+            "🏷️ <b>Item</b>: " + escapeHtml(description) + "\n" +
             "💰 <b>Total</b>: <b>" + amountFormatted + "</b>\n" +
             "👤 <b>Paid By</b>: <b>" + escapeHtml(paidBy) + "</b>\n" +
             splitDetails + "\n" +
             "━━━━━━━━━━━━━\n" +
-            "💡 <i>Ledger updated!</i>";
+            "💡 <i>History updated!</i>";
+
+  sendTelegramMessage(chatId, msg, getAppReplyMarkup(chatId));
+}
+
+function updateExpenseInSheet(exp, chatId) {
+  var sheet = getExpensesSheet();
+  var data = sheet.getDataRange().getValues();
+  var targetId = String(exp.id || "").trim();
+  var cleanChatId = normalizeChatId(chatId || exp.chatId || "");
+
+  var timestamp = exp.timestamp || new Date().toISOString();
+  var id = targetId || ("EXP-" + Date.now());
+  var description = exp.description || "Expense";
+  var amount = Number(exp.amount) || 0;
+  var currency = exp.currency || "₱";
+  var paidBy = exp.paidBy || "Unknown";
+  var splitMode = exp.splitMode || "Equal";
+  var userAShare = (exp.userAShare !== undefined && exp.userAShare !== null) ? exp.userAShare : "";
+  var userBShare = (exp.userBShare !== undefined && exp.userBShare !== null) ? exp.userBShare : "";
+  var userAPercent = (exp.userAPercent !== undefined && exp.userAPercent !== null) ? exp.userAPercent : "";
+  var userBPercent = (exp.userBPercent !== undefined && exp.userBPercent !== null) ? exp.userBPercent : "";
+  var createdBy = exp.createdBy || paidBy;
+  var category = exp.category || "General";
+
+  var splitData = "";
+  if (exp.shares || exp.percentages || exp.singleOwer || exp.splitMembers) {
+    try {
+      splitData = JSON.stringify({
+        shares: exp.shares,
+        percentages: exp.percentages,
+        singleOwer: exp.singleOwer,
+        splitMembers: exp.splitMembers
+      });
+    } catch (e) {}
+  }
+
+  var foundRow = -1;
+  for (var i = 1; i < data.length; i++) {
+    var rowId = String(data[i][1] || "").trim();
+    if (rowId && targetId && rowId === targetId) {
+      foundRow = i + 1;
+      break;
+    }
+  }
+
+  var rowValues = [
+    timestamp, id, description, amount, currency, paidBy,
+    splitMode, userAShare, userBShare, userAPercent, userBPercent,
+    createdBy, category, cleanChatId, splitData
+  ];
+
+  if (foundRow > 0) {
+    sheet.getRange(foundRow, 1, 1, 15).setValues([rowValues]);
+    return true;
+  } else {
+    sheet.appendRow(rowValues);
+    return true;
+  }
+}
+
+function deleteExpenseFromSheet(expenseId, chatId) {
+  if (!expenseId) return false;
+  var sheet = getExpensesSheet();
+  var data = sheet.getDataRange().getValues();
+  var targetId = String(expenseId).trim();
+
+  for (var i = 1; i < data.length; i++) {
+    var rowId = String(data[i][1] || "").trim();
+    if (rowId && rowId === targetId) {
+      sheet.deleteRow(i + 1);
+      return true;
+    }
+  }
+  return false;
+}
+
+function sendExpenseUpdateGroupNotification(chatId, exp) {
+  var currency = exp.currency || "₱";
+  var amountFormatted = currency + Number(exp.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  var paidBy = exp.paidBy || "Someone";
+  var description = exp.description || "Expense";
+  var splitMode = exp.splitMode || "Equal";
+
+  var splitDetails = "";
+  if (splitMode === "Equal" || splitMode === "50/50 Equal") {
+    if (exp.splitMembers && Array.isArray(exp.splitMembers) && exp.splitMembers.length > 0) {
+      var perPerson = currency + (Number(exp.amount || 0) / exp.splitMembers.length).toFixed(2);
+      var memberNames = exp.splitMembers.map(escapeHtml).join(", ");
+      splitDetails = "• <b>Split (Equal among " + exp.splitMembers.length + ")</b>: " + memberNames + " (" + perPerson + " each)";
+    } else {
+      splitDetails = "• <b>Split</b>: Divided equally among group members";
+    }
+  } else if (splitMode === "Exact Amounts") {
+    if (exp.shares && Object.keys(exp.shares).length > 0) {
+      var shareEntries = [];
+      for (var u in exp.shares) {
+        shareEntries.push(escapeHtml(u) + ": " + currency + Number(exp.shares[u] || 0).toFixed(2));
+      }
+      splitDetails = "• <b>Split (Exact)</b>: " + shareEntries.join(", ");
+    } else {
+      splitDetails = "• <b>Split</b>: Exact Amounts (" + currency + (exp.userAShare || 0) + " / " + currency + (exp.userBShare || 0) + ")";
+    }
+  } else if (splitMode === "Percentages") {
+    if (exp.percentages && Object.keys(exp.percentages).length > 0) {
+      var pctEntries = [];
+      for (var p in exp.percentages) {
+        pctEntries.push(escapeHtml(p) + ": " + Number(exp.percentages[p] || 0) + "%");
+      }
+      splitDetails = "• <b>Split (Percentages)</b>: " + pctEntries.join(", ");
+    } else {
+      splitDetails = "• <b>Split</b>: Custom % (" + (exp.userAPercent || 50) + "% / " + (exp.userBPercent || 50) + "%)";
+    }
+  } else if (splitMode === "Single Payer (100% owed)") {
+    var debtor = exp.singleOwer || "Group Member";
+    splitDetails = "• <b>Split</b>: 100% owed by <b>" + escapeHtml(debtor) + "</b>";
+  } else {
+    splitDetails = "• <b>Split</b>: " + splitMode;
+  }
+
+  var msg = "✏️ <b>Expense updated!</b>\n" +
+            "━━━━━━━━━━━━━\n" +
+            "🏷️ <b>Item</b>: " + escapeHtml(description) + "\n" +
+            "💰 <b>Total</b>: <b>" + amountFormatted + "</b>\n" +
+            "👤 <b>Paid By</b>: <b>" + escapeHtml(paidBy) + "</b>\n" +
+            splitDetails + "\n" +
+            "━━━━━━━━━━━━━\n" +
+            "💡 <i>Ledger & balances updated!</i>";
 
   sendTelegramMessage(chatId, msg, getAppReplyMarkup(chatId));
 }
@@ -985,9 +1030,6 @@ function saveSettlementToSheet(settle, chatId) {
   ]);
 }
 
-/**
- * Sends a clean Telegram group message detailing the recorded settlement.
- */
 function sendSettlementGroupNotification(chatId, settle) {
   var currency = settle.currency || "₱";
   var amountFormatted = currency + Number(settle.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -995,14 +1037,14 @@ function sendSettlementGroupNotification(chatId, settle) {
   var receiver = settle.receiver || "Member";
   var method = settle.method || "Cash";
 
-  var msg = "🤝 <b>Settlement Recorded</b>\n" +
+  var msg = "🤝 <b>Settlement recorded!</b>\n" +
             "━━━━━━━━━━━━━\n" +
             "💸 <b>Payer</b>: <b>" + escapeHtml(payer) + "</b>\n" +
             "📥 <b>Receiver</b>: <b>" + escapeHtml(receiver) + "</b>\n" +
             "💵 <b>Amount Paid</b>: <b>" + amountFormatted + "</b>\n" +
             "💳 <b>Method</b>: " + escapeHtml(method) + "\n" +
             "━━━━━━━━━━━━━\n" +
-            "✅ <i>Debt marked as resolved in ledger!</i>";
+            "✅ <i>Debt marked as resolved in settlements!</i>";
 
   sendTelegramMessage(chatId, msg, getAppReplyMarkup(chatId));
 }
@@ -1013,83 +1055,98 @@ function sendSettlementGroupNotification(chatId, settle) {
 
 function getGroupBalanceTextSummary(chatId, isDetailedSummary) {
   var cleanChatId = normalizeChatId(chatId);
-  var expenses = [];
-  var settlements = [];
-  var users = [];
-
-  try {
-    var data = getAllData(cleanChatId);
-    expenses = data.expenses || [];
-    settlements = data.settlements || [];
-    users = data.users || [];
-  } catch (dataErr) {
-    Logger.log("getAllData error in getGroupBalanceTextSummary: " + dataErr.toString());
-  }
+  var data = getAllData(cleanChatId);
+  var expenses = data.expenses || [];
+  var settlements = data.settlements || [];
+  var users = data.users || [];
+  var groupTitle = data.groupTitle || data.chatTitle || "";
 
   if (expenses.length === 0 && settlements.length === 0) {
-    return "📊 <b>Group Expense Summary</b>\n" +
-           "━━━━━━━━━━━━━\n" +
+    var emptyHeader = groupTitle 
+      ? "📊 <b>" + escapeHtml(groupTitle) + " — Expense Summary</b>\n━━━━━━━━━━━━━\n"
+      : "📊 <b>splitnest Group Expense Summary</b>\n━━━━━━━━━━━━━\n";
+    return emptyHeader +
            "No expenses or settlements recorded yet for this chat.\n\n" +
            "💡 <i>Tap the button below to log an expense or split a bill!</i>";
   }
 
-  // 1. Gather all unique valid members across users, expenses, and settlements
-  var memberMap = {};
+  // 1. Canonical Member Roster & Case-Insensitive Alias Resolver
+  var canonicalUsers = [];
+  var nameToCanonical = {};
 
   for (var u = 0; u < users.length; u++) {
     var rawName = String(users[u].firstName || users[u].name || users[u].username || "").trim();
-    if (rawName && rawName.toLowerCase().indexOf("bot") === -1 && rawName !== "Alex" && rawName !== "Sam") {
-      memberMap[rawName] = true;
-    }
-  }
-
-  for (var i = 0; i < expenses.length; i++) {
-    var exp = expenses[i];
-    var pBy = String(exp.paidBy || "").trim();
-    if (pBy && pBy.toLowerCase().indexOf("bot") === -1 && pBy !== "Alex" && pBy !== "Sam") {
-      memberMap[pBy] = true;
-    }
-    var cBy = String(exp.createdBy || "").trim();
-    if (cBy && cBy.toLowerCase().indexOf("bot") === -1 && cBy !== "Alex" && cBy !== "Sam") {
-      memberMap[cBy] = true;
-    }
-    var sOwer = String(exp.singleOwer || "").trim();
-    if (sOwer && sOwer.toLowerCase().indexOf("bot") === -1 && sOwer !== "Alex" && sOwer !== "Sam") {
-      memberMap[sOwer] = true;
-    }
-    if (exp.shares && typeof exp.shares === "object") {
-      for (var sUser in exp.shares) {
-        var sUserClean = String(sUser).trim();
-        if (sUserClean && sUserClean.toLowerCase().indexOf("bot") === -1 && sUserClean !== "Alex" && sUserClean !== "Sam") {
-          memberMap[sUserClean] = true;
+    if (rawName && rawName.toLowerCase().indexOf("bot") === -1 && rawName !== "Alex" && rawName !== "Sam" && !isUserBlacklisted(cleanChatId, rawName)) {
+      var key = rawName.toLowerCase();
+      if (!nameToCanonical[key]) {
+        nameToCanonical[key] = rawName;
+        if (users[u].username) {
+          var uClean = users[u].username.toLowerCase().replace(/^@/, "");
+          nameToCanonical[uClean] = rawName;
+          nameToCanonical["@" + uClean] = rawName;
         }
-      }
-    }
-    if (exp.percentages && typeof exp.percentages === "object") {
-      for (var pUser in exp.percentages) {
-        var pUserClean = String(pUser).trim();
-        if (pUserClean && pUserClean.toLowerCase().indexOf("bot") === -1 && pUserClean !== "Alex" && pUserClean !== "Sam") {
-          memberMap[pUserClean] = true;
+        if (users[u].userId) {
+          nameToCanonical[String(users[u].userId).toLowerCase()] = rawName;
         }
+        canonicalUsers.push(rawName);
       }
     }
   }
 
-  for (var s = 0; s < settlements.length; s++) {
-    var st = settlements[s];
-    var sPayer = String(st.payer || "").trim();
-    if (sPayer && sPayer.toLowerCase().indexOf("bot") === -1 && sPayer !== "Alex" && sPayer !== "Sam") {
-      memberMap[sPayer] = true;
+  function resolveCanonical(raw) {
+    if (!raw) return "";
+    var s = String(raw).trim();
+    if (!s) return "";
+    var low = s.toLowerCase();
+    if (nameToCanonical[low]) return nameToCanonical[low];
+    var lowClean = low.replace(/^@/, "");
+    if (nameToCanonical[lowClean]) return nameToCanonical[lowClean];
+
+    // Check fuzzy startsWith match (e.g. "Kate" for "Kate Rustia")
+    for (var k = 0; k < canonicalUsers.length; k++) {
+      var cUser = canonicalUsers[k];
+      var cLow = cUser.toLowerCase();
+      if (cLow === low || cLow.indexOf(low) === 0 || low.indexOf(cLow) === 0) {
+        nameToCanonical[low] = cUser;
+        return cUser;
+      }
     }
-    var sReceiver = String(st.receiver || "").trim();
-    if (sReceiver && sReceiver.toLowerCase().indexOf("bot") === -1 && sReceiver !== "Alex" && sReceiver !== "Sam") {
-      memberMap[sReceiver] = true;
+
+    if (low.indexOf("bot") === -1 && s !== "Alex" && s !== "Sam" && !isUserBlacklisted(cleanChatId, s)) {
+      nameToCanonical[low] = s;
+      canonicalUsers.push(s);
+      return s;
+    }
+    return s;
+  }
+
+  // Pre-seed all members from expenses & settlements
+  for (var iex = 0; iex < expenses.length; iex++) {
+    var expObj = expenses[iex];
+    if (expObj.paidBy) resolveCanonical(expObj.paidBy);
+    if (expObj.createdBy) resolveCanonical(expObj.createdBy);
+    if (expObj.singleOwer) resolveCanonical(expObj.singleOwer);
+    if (expObj.splitMembers && Array.isArray(expObj.splitMembers)) {
+      for (var sm = 0; sm < expObj.splitMembers.length; sm++) {
+        resolveCanonical(expObj.splitMembers[sm]);
+      }
+    }
+    if (expObj.shares && typeof expObj.shares === "object") {
+      for (var sh in expObj.shares) resolveCanonical(sh);
+    }
+    if (expObj.percentages && typeof expObj.percentages === "object") {
+      for (var pct in expObj.percentages) resolveCanonical(pct);
     }
   }
 
-  var allMemberList = Object.keys(memberMap);
-  if (allMemberList.length === 0) {
-    allMemberList = ["Member"];
+  for (var ist = 0; ist < settlements.length; ist++) {
+    var stObj = settlements[ist];
+    if (stObj.payer) resolveCanonical(stObj.payer);
+    if (stObj.receiver) resolveCanonical(stObj.receiver);
+  }
+
+  if (canonicalUsers.length === 0) {
+    canonicalUsers = ["Member"];
   }
 
   // 2. Discover all distinct currencies
@@ -1125,46 +1182,48 @@ function getGroupBalanceTextSummary(chatId, isDetailedSummary) {
       }
     }
 
-    // Initialize net balances for all members
     var netMap = {};
-    for (var m = 0; m < allMemberList.length; m++) {
-      netMap[allMemberList[m]] = 0;
+    for (var m = 0; m < canonicalUsers.length; m++) {
+      netMap[canonicalUsers[m]] = 0;
     }
 
-    // Apply expenses
     for (var ex = 0; ex < currExpenses.length; ex++) {
       var item = currExpenses[ex];
       var amt = Number(item.amount) || 0;
-      var payer = String(item.paidBy || allMemberList[0]).trim();
+      var payer = resolveCanonical(item.paidBy) || canonicalUsers[0];
       if (netMap[payer] === undefined) netMap[payer] = 0;
       netMap[payer] += amt;
 
       var splitMode = String(item.splitMode || "Equal");
 
-      if (splitMode === "Equal" || splitMode === "50/50 Equal") {
-        var memberCount = Math.max(allMemberList.length, 1);
-        var equalShare = amt / memberCount;
-        for (var mi = 0; mi < allMemberList.length; mi++) {
-          var uName = allMemberList[mi];
+      if (splitMode === "Equal" || splitMode === "50/50 Equal" || !splitMode) {
+        var participants = (item.splitMembers && Array.isArray(item.splitMembers) && item.splitMembers.length > 0)
+          ? item.splitMembers.map(resolveCanonical).filter(Boolean)
+          : canonicalUsers;
+        if (participants.length === 0) participants = [payer];
+        var equalShare = amt / participants.length;
+        for (var pi = 0; pi < participants.length; pi++) {
+          var uName = participants[pi];
           if (netMap[uName] === undefined) netMap[uName] = 0;
           netMap[uName] -= equalShare;
         }
       } else if (splitMode === "Exact Amounts") {
         if (item.shares && Object.keys(item.shares).length > 0) {
-          for (var exactUser in item.shares) {
+          for (var exactKey in item.shares) {
+            var exactUser = resolveCanonical(exactKey);
             if (netMap[exactUser] === undefined) netMap[exactUser] = 0;
-            netMap[exactUser] -= (Number(item.shares[exactUser]) || 0);
+            netMap[exactUser] -= (Number(item.shares[exactKey]) || 0);
           }
         } else {
           var userA = payer;
           var userB = "";
-          for (var bIdx = 0; bIdx < allMemberList.length; bIdx++) {
-            if (allMemberList[bIdx] !== payer) {
-              userB = allMemberList[bIdx];
+          for (var bIdx = 0; bIdx < canonicalUsers.length; bIdx++) {
+            if (canonicalUsers[bIdx] !== payer) {
+              userB = canonicalUsers[bIdx];
               break;
             }
           }
-          if (!userB && allMemberList.length > 1) userB = allMemberList[1];
+          if (!userB && canonicalUsers.length > 1) userB = canonicalUsers[1];
 
           var shareA = item.userAShare !== undefined ? Number(item.userAShare) : (amt / 2);
           var shareB = item.userBShare !== undefined ? Number(item.userBShare) : (amt / 2);
@@ -1176,20 +1235,21 @@ function getGroupBalanceTextSummary(chatId, isDetailedSummary) {
         }
       } else if (splitMode === "Percentages") {
         if (item.percentages && Object.keys(item.percentages).length > 0) {
-          for (var pctUser in item.percentages) {
+          for (var pctKey in item.percentages) {
+            var pctUser = resolveCanonical(pctKey);
             if (netMap[pctUser] === undefined) netMap[pctUser] = 0;
-            netMap[pctUser] -= amt * ((Number(item.percentages[pctUser]) || 0) / 100);
+            netMap[pctUser] -= amt * ((Number(item.percentages[pctKey]) || 0) / 100);
           }
         } else {
           var uA = payer;
           var uB = "";
-          for (var ubIdx = 0; ubIdx < allMemberList.length; ubIdx++) {
-            if (allMemberList[ubIdx] !== payer) {
-              uB = allMemberList[ubIdx];
+          for (var ubIdx = 0; ubIdx < canonicalUsers.length; ubIdx++) {
+            if (canonicalUsers[ubIdx] !== payer) {
+              uB = canonicalUsers[ubIdx];
               break;
             }
           }
-          if (!uB && allMemberList.length > 1) uB = allMemberList[1];
+          if (!uB && canonicalUsers.length > 1) uB = canonicalUsers[1];
 
           var pA = (item.userAPercent !== undefined ? Number(item.userAPercent) : 50) / 100;
           var pB = (item.userBPercent !== undefined ? Number(item.userBPercent) : 50) / 100;
@@ -1200,11 +1260,11 @@ function getGroupBalanceTextSummary(chatId, isDetailedSummary) {
           }
         }
       } else if (splitMode === "Single Payer (100% owed)") {
-        var debtor = item.singleOwer;
+        var debtor = resolveCanonical(item.singleOwer);
         if (!debtor) {
-          for (var dIdx = 0; dIdx < allMemberList.length; dIdx++) {
-            if (allMemberList[dIdx] !== payer) {
-              debtor = allMemberList[dIdx];
+          for (var dIdx = 0; dIdx < canonicalUsers.length; dIdx++) {
+            if (canonicalUsers[dIdx] !== payer) {
+              debtor = canonicalUsers[dIdx];
               break;
             }
           }
@@ -1214,21 +1274,20 @@ function getGroupBalanceTextSummary(chatId, isDetailedSummary) {
           netMap[debtor] -= amt;
         }
       } else {
-        var defaultShare = amt / Math.max(allMemberList.length, 1);
-        for (var dm = 0; dm < allMemberList.length; dm++) {
-          var dmName = allMemberList[dm];
+        var defaultShare = amt / Math.max(canonicalUsers.length, 1);
+        for (var dm = 0; dm < canonicalUsers.length; dm++) {
+          var dmName = canonicalUsers[dm];
           if (netMap[dmName] === undefined) netMap[dmName] = 0;
           netMap[dmName] -= defaultShare;
         }
       }
     }
 
-    // Apply settlements
     for (var stIdx = 0; stIdx < currSettlements.length; stIdx++) {
       var setObj = currSettlements[stIdx];
       var setAmt = Number(setObj.amount) || 0;
-      var setPayer = String(setObj.payer || "").trim();
-      var setReceiver = String(setObj.receiver || "").trim();
+      var setPayer = resolveCanonical(setObj.payer);
+      var setReceiver = resolveCanonical(setObj.receiver);
       if (setPayer) {
         if (netMap[setPayer] === undefined) netMap[setPayer] = 0;
         netMap[setPayer] += setAmt;
@@ -1239,7 +1298,6 @@ function getGroupBalanceTextSummary(chatId, isDetailedSummary) {
       }
     }
 
-    // 4. Build output section for this currency
     var lines = [];
     var totalFormatted = formatMoney(totalSpent, curr);
     
@@ -1249,17 +1307,18 @@ function getGroupBalanceTextSummary(chatId, isDetailedSummary) {
 
     var debtors = [];
     var creditors = [];
-
     var activeMembers = Object.keys(netMap);
+
     for (var k = 0; k < activeMembers.length; k++) {
       var memberName = activeMembers[k];
-      var netVal = netMap[memberName];
+      var rawNet = netMap[memberName];
+      var netVal = Math.round(rawNet * 100) / 100;
       var formattedAmt = formatMoney(netVal, curr);
 
-      if (netVal > 0.01) {
+      if (netVal >= 0.01) {
         lines.push("• 🟢 <b>" + escapeHtml(memberName) + "</b> is owed <b>+" + formattedAmt + "</b>");
         creditors.push({ name: memberName, bal: netVal });
-      } else if (netVal < -0.01) {
+      } else if (netVal <= -0.01) {
         lines.push("• 🔴 <b>" + escapeHtml(memberName) + "</b> owes <b>-" + formattedAmt + "</b>");
         debtors.push({ name: memberName, bal: Math.abs(netVal) });
       } else {
@@ -1267,23 +1326,32 @@ function getGroupBalanceTextSummary(chatId, isDetailedSummary) {
       }
     }
 
-    // Compute pair-wise simplified settlement suggestions
+    // Sort descending by balance magnitude for minimal transaction count
+    debtors.sort(function(a, b) { return b.bal - a.bal; });
+    creditors.sort(function(a, b) { return b.bal - a.bal; });
+
     var debtPairs = [];
-    for (var di = 0; di < debtors.length; di++) {
-      var deb = debtors[di];
-      for (var ci = 0; ci < creditors.length; ci++) {
-        var cred = creditors[ci];
-        var payAmt = Math.min(deb.bal, cred.bal);
-        if (payAmt >= 0.01) {
-          debtPairs.push({
-            debtor: deb.name,
-            creditor: cred.name,
-            amount: payAmt
-          });
-          deb.bal -= payAmt;
-          cred.bal -= payAmt;
-        }
+    var dPointer = 0;
+    var cPointer = 0;
+
+    while (dPointer < debtors.length && cPointer < creditors.length) {
+      var deb = debtors[dPointer];
+      var cred = creditors[cPointer];
+      var payAmt = Math.min(deb.bal, cred.bal);
+      payAmt = Math.round(payAmt * 100) / 100;
+
+      if (payAmt >= 0.01) {
+        debtPairs.push({
+          debtor: deb.name,
+          creditor: cred.name,
+          amount: payAmt
+        });
+        deb.bal = Math.round((deb.bal - payAmt) * 100) / 100;
+        cred.bal = Math.round((cred.bal - payAmt) * 100) / 100;
       }
+
+      if (deb.bal < 0.01) dPointer++;
+      if (cred.bal < 0.01) cPointer++;
     }
 
     lines.push("");
@@ -1298,7 +1366,6 @@ function getGroupBalanceTextSummary(chatId, isDetailedSummary) {
       }
     }
 
-    // If detailed summary requested, append last 3 expenses
     if (isDetailedSummary && currExpenses.length > 0) {
       lines.push("");
       lines.push("🧾 <b>Recent Expenses:</b>");
@@ -1313,14 +1380,16 @@ function getGroupBalanceTextSummary(chatId, isDetailedSummary) {
     outputSections.push(lines.join("\n"));
   }
 
-  var header = "📊 <b>splitnest Group Balance & Summary</b>\n━━━━━━━━━━━━━\n";
+  var header = groupTitle 
+    ? "📊 <b>" + escapeHtml(groupTitle) + " — Balance & Summary</b>\n━━━━━━━━━━━━━\n"
+    : "📊 <b>splitnest Group Balance & Summary</b>\n━━━━━━━━━━━━━\n";
   var footer = "\n━━━━━━━━━━━━━\n💡 <i>Tap below to open splitnest or record settlements!</i>";
 
   return header + outputSections.join("\n\n") + footer;
 }
 
 // ==============================================================================
-// 12. TELEGRAM API UTILITIES
+// 12. TELEGRAM API UTILITIES & QUEUE FLUSHING
 // ==============================================================================
 
 function sendTelegramMessage(chatId, text, replyMarkup) {
@@ -1350,10 +1419,8 @@ function sendTelegramMessage(chatId, text, replyMarkup) {
     
     if (!resJson.ok) {
       Logger.log("Telegram sendMessage error: " + resText);
-      // Fallback 1: If HTML entity parsing fails, send without parse_mode
       if (resJson.description && resJson.description.indexOf("can't parse entities") !== -1) {
         delete payload.parse_mode;
-        // Strip HTML tags for clean plain-text delivery
         payload.text = text.replace(/<[^>]+>/g, "");
         var retryRes = UrlFetchApp.fetch(url, {
           method: "post",
@@ -1363,7 +1430,6 @@ function sendTelegramMessage(chatId, text, replyMarkup) {
         });
         return JSON.parse(retryRes.getContentText());
       }
-      // Fallback 2: If inline keyboard button URL is rejected, send without reply_markup
       if (resJson.description && resJson.description.indexOf("BUTTON_URL_INVALID") !== -1) {
         delete payload.reply_markup;
         var retryRes2 = UrlFetchApp.fetch(url, {
@@ -1386,7 +1452,6 @@ function getAppReplyMarkup(chatId) {
   var cleanChatId = normalizeChatId(chatId);
   var appUrl = MINI_APP_URL;
 
-  // Add deep link startapp param for group isolation
   if (cleanChatId) {
     var param = cleanChatId.replace(/^-/, "g_");
     appUrl = MINI_APP_URL + "?startapp=" + encodeURIComponent(param);
@@ -1396,7 +1461,7 @@ function getAppReplyMarkup(chatId) {
     inline_keyboard: [
       [
         {
-          text: "🚀 Open splitnest App",
+          text: "🚀 Open splitnest",
           url: appUrl
         }
       ]
@@ -1404,11 +1469,19 @@ function getAppReplyMarkup(chatId) {
   };
 }
 
-function setWebhook() {
+/**
+ * Instantly purges all pending/stuck updates in the Telegram queue
+ * and re-binds the current Apps Script web app URL.
+ */
+function clearTelegramWebhookQueue() {
   var appUrl = ScriptApp.getService().getUrl();
   var url = TELEGRAM_API_BASE + "/setWebhook?url=" + encodeURIComponent(appUrl) + "&drop_pending_updates=true";
   var res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
   return JSON.parse(res.getContentText());
+}
+
+function setWebhook() {
+  return clearTelegramWebhookQueue();
 }
 
 function formatMoney(amount, currency) {

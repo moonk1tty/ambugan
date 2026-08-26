@@ -98,22 +98,57 @@ function getChatId(): string {
   return '';
 }
 
+function getGroupTitle(cId: string): string {
+  const tg = (window as any).Telegram?.WebApp;
+  if (tg?.initDataUnsafe?.chat?.title) {
+    return tg.initDataUnsafe.chat.title;
+  }
+  const urlParams = new URLSearchParams(window.location.search);
+  const paramTitle = urlParams.get('group_title') || urlParams.get('groupTitle') || urlParams.get('title') || urlParams.get('chat_title');
+  if (paramTitle) return paramTitle;
+
+  if (window.location.hash) {
+    try {
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+      const hashTitle = hashParams.get('group_title') || hashParams.get('groupTitle') || hashParams.get('title') || hashParams.get('chat_title');
+      if (hashTitle) return hashTitle;
+    } catch (e) {}
+  }
+
+  if (cId) {
+    const saved = localStorage.getItem(`splitsquad_group_title_${cId}`);
+    if (saved) return saved;
+  }
+  return '';
+}
+
 const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbyzs2hkta9HPE7MDkHgXw6Fk56r9WBaSb_7M9Y3H_cIUfZsDdJJsIpF8dEqTvC4bU5J/exec';
 
 export default function App() {
   const [chatId, setChatId] = useState<string>(() => getChatId());
+  const [groupTitle, setGroupTitle] = useState<string>(() => getGroupTitle(chatId));
 
-  // Detect and update chatId dynamically when Telegram SDK initializes
+  // Detect and update chatId & groupTitle dynamically when Telegram SDK initializes
   useEffect(() => {
     const tg = (window as any).Telegram?.WebApp;
     if (tg) {
       try { tg.ready(); } catch (e) {}
+      if (tg.initDataUnsafe?.chat?.title) {
+        setGroupTitle(tg.initDataUnsafe.chat.title);
+        if (chatId) {
+          localStorage.setItem(`splitsquad_group_title_${chatId}`, tg.initDataUnsafe.chat.title);
+        }
+      }
     }
 
     const checkAndSetChatId = () => {
       const currentId = getChatId();
       if (currentId && currentId !== chatId) {
         setChatId(currentId);
+      }
+      const tgLatest = (window as any).Telegram?.WebApp;
+      if (tgLatest?.initDataUnsafe?.chat?.title) {
+        setGroupTitle(tgLatest.initDataUnsafe.chat.title);
       }
     };
 
@@ -260,6 +295,13 @@ export default function App() {
 
       if (result.status === 'success' && result.data) {
         setIsOnlineGas(true);
+        if (result.data.groupTitle || result.data.chatTitle) {
+          const title = result.data.groupTitle || result.data.chatTitle;
+          setGroupTitle(title);
+          if (currentChatId) {
+            localStorage.setItem(`splitsquad_group_title_${currentChatId}`, title);
+          }
+        }
         const fetchedExpenses = Array.isArray(result.data.expenses) ? result.data.expenses : [];
         const fetchedSettlements = Array.isArray(result.data.settlements) ? result.data.settlements : [];
         const fetchedUsers: RegisteredUser[] = Array.isArray(result.data.users) ? [...result.data.users] : [];
@@ -459,6 +501,108 @@ export default function App() {
     }
   };
 
+  const handleEditExpense = async (updatedExp: Expense) => {
+    // 1. Optimistic local state and localStorage update
+    const updatedExpenses = expenses.map(exp => (exp.id === updatedExp.id ? updatedExp : exp));
+    setExpenses(updatedExpenses);
+    try {
+      localStorage.setItem(`splitnest_expenses_${chatId || 'default'}`, JSON.stringify(updatedExpenses));
+      if (chatId) {
+        localStorage.setItem(`${STORAGE_KEYS.EXPENSES}_${chatId}`, JSON.stringify(updatedExpenses));
+      }
+    } catch (e) {}
+
+    // 2. Send update to GAS backend if configured
+    if (gasUrl && gasUrl.startsWith('http')) {
+      try {
+        const currentChatId = chatId || getChatId();
+        const tg = (window as any).Telegram?.WebApp;
+        const tgUser = tg?.initDataUnsafe?.user;
+
+        const response = await fetch(gasUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'edit_expense',
+            expense: updatedExp,
+            chatId: currentChatId,
+            user: tgUser
+          })
+        });
+        const result = await response.json();
+        if (result.status === 'success' && result.data) {
+          setIsOnlineGas(true);
+          if (Array.isArray(result.data.expenses)) {
+            setExpenses(result.data.expenses);
+            try {
+              localStorage.setItem(`splitnest_expenses_${currentChatId || 'default'}`, JSON.stringify(result.data.expenses));
+            } catch (e) {}
+          }
+          if (Array.isArray(result.data.settlements)) {
+            setSettlements(result.data.settlements);
+            try {
+              localStorage.setItem(`splitnest_settlements_${currentChatId || 'default'}`, JSON.stringify(result.data.settlements));
+            } catch (e) {}
+          }
+          if (Array.isArray(result.data.users)) {
+            setRegisteredUsers(result.data.users);
+            try {
+              localStorage.setItem(`splitnest_users_${currentChatId || 'default'}`, JSON.stringify(result.data.users));
+            } catch (e) {}
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to sync expense update with Google Apps Script backend:', err);
+      }
+    }
+  };
+
+  const handleDeleteExpense = async (expenseId: string) => {
+    // 1. Optimistic local state and localStorage update
+    const updatedExpenses = expenses.filter(exp => exp.id !== expenseId);
+    setExpenses(updatedExpenses);
+    try {
+      localStorage.setItem(`splitnest_expenses_${chatId || 'default'}`, JSON.stringify(updatedExpenses));
+      if (chatId) {
+        localStorage.setItem(`${STORAGE_KEYS.EXPENSES}_${chatId}`, JSON.stringify(updatedExpenses));
+      }
+    } catch (e) {}
+
+    // 2. Send delete to GAS backend if configured
+    if (gasUrl && gasUrl.startsWith('http')) {
+      try {
+        const currentChatId = chatId || getChatId();
+        const response = await fetch(gasUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'delete_expense',
+            id: expenseId,
+            chatId: currentChatId
+          })
+        });
+        const result = await response.json();
+        if (result.status === 'success' && result.data) {
+          setIsOnlineGas(true);
+          if (Array.isArray(result.data.expenses)) {
+            setExpenses(result.data.expenses);
+            try {
+              localStorage.setItem(`splitnest_expenses_${currentChatId || 'default'}`, JSON.stringify(result.data.expenses));
+            } catch (e) {}
+          }
+          if (Array.isArray(result.data.settlements)) {
+            setSettlements(result.data.settlements);
+            try {
+              localStorage.setItem(`splitnest_settlements_${currentChatId || 'default'}`, JSON.stringify(result.data.settlements));
+            } catch (e) {}
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to sync expense deletion with Google Apps Script backend:', err);
+      }
+    }
+  };
+
   const handleSettleUp = async (settlement: Omit<Settlement, 'id' | 'timestamp'>) => {
     const created: Settlement = {
       ...settlement,
@@ -631,6 +775,8 @@ export default function App() {
             activeUser={activeUser}
             setActiveUser={setActiveUser}
             onAddExpense={handleAddExpense}
+            onEditExpense={handleEditExpense}
+            onDeleteExpense={handleDeleteExpense}
             onSettleUp={handleSettleUp}
             onSyncMembers={handleSyncMembers}
             onRemoveMember={handleRemoveMember}
@@ -638,6 +784,7 @@ export default function App() {
             setGasUrl={setGasUrl}
             isOnlineGas={isOnlineGas}
             chatId={chatId}
+            groupTitle={groupTitle}
           />
         )}
       </main>

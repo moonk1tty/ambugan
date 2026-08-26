@@ -21,6 +21,7 @@ export interface Expense {
   shares?: Record<string, number>;
   percentages?: Record<string, number>;
   singleOwer?: string;
+  splitMembers?: string[];
   createdBy: string;
   category?: string;
   chatId?: string;

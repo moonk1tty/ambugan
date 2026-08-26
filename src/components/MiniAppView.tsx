@@ -14,6 +14,8 @@ import {
   Users,
   UserMinus,
   Trash2,
+  Pencil,
+  Check,
   X
 } from 'lucide-react';
 import { Expense, Settlement, RegisteredUser, formatAmount } from '../types';
@@ -25,6 +27,8 @@ interface MiniAppViewProps {
   activeUser: string;
   setActiveUser: (user: string) => void;
   onAddExpense: (expense: Omit<Expense, 'id' | 'timestamp'>) => Promise<void> | void;
+  onEditExpense?: (expense: Expense) => Promise<void> | void;
+  onDeleteExpense?: (expenseId: string) => Promise<void> | void;
   onSettleUp: (settlement: Omit<Settlement, 'id' | 'timestamp'>) => Promise<void> | void;
   onSyncMembers?: () => Promise<void> | void;
   onRemoveMember?: (memberName: string) => Promise<void> | void;
@@ -32,6 +36,7 @@ interface MiniAppViewProps {
   setGasUrl: (url: string) => void;
   isOnlineGas: boolean;
   chatId?: string;
+  groupTitle?: string;
 }
 
 const SUPPORTED_CURRENCIES = [
@@ -51,13 +56,16 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   activeUser,
   setActiveUser,
   onAddExpense,
+  onEditExpense,
+  onDeleteExpense,
   onSettleUp,
   onSyncMembers,
   onRemoveMember,
   gasUrl,
   setGasUrl,
   isOnlineGas,
-  chatId = ''
+  chatId = '',
+  groupTitle = ''
 }) => {
   const [activeTab, setActiveTab] = useState<'new' | 'balances' | 'ledger'>('new');
   
@@ -70,6 +78,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [customUserName, setCustomUserName] = useState('');
   const [isSyncingMembers, setIsSyncingMembers] = useState(false);
   const [splitMode, setSplitMode] = useState<'Equal' | '50/50 Equal' | 'Exact Amounts' | 'Percentages' | 'Single Payer (100% owed)'>('Equal');
+  const [equalSplitMembers, setEqualSplitMembers] = useState<string[]>([]);
   const [exactShares, setExactShares] = useState<Record<string, string>>({});
   const [percentShares, setPercentShares] = useState<Record<string, string>>({});
   const [singleDebtor, setSingleDebtor] = useState<string>('');
@@ -91,6 +100,20 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   } | null>(null);
   const [settleAmount, setSettleAmount] = useState('');
   const [settleMethod, setSettleMethod] = useState('Cash');
+
+  // Edit Expense Modal State
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+  const [editDescription, setEditDescription] = useState('');
+  const [editAmount, setEditAmount] = useState('');
+  const [editCurrency, setEditCurrency] = useState('₱');
+  const [editPaidBy, setEditPaidBy] = useState('');
+  const [editSplitMode, setEditSplitMode] = useState<'Equal' | '50/50 Equal' | 'Exact Amounts' | 'Percentages' | 'Single Payer (100% owed)'>('Equal');
+  const [editEqualSplitMembers, setEditEqualSplitMembers] = useState<string[]>([]);
+  const [editExactShares, setEditExactShares] = useState<Record<string, string>>({});
+  const [editPercentShares, setEditPercentShares] = useState<Record<string, string>>({});
+  const [editSingleDebtor, setEditSingleDebtor] = useState<string>('');
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeletingExpense, setIsDeletingExpense] = useState(false);
 
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [inputGasUrl, setInputGasUrl] = useState(gasUrl);
@@ -245,6 +268,45 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     }
   }
 
+  // Active contributors for Equal Split in Add Expense form (default is ALL available users)
+  const selectedEqualMembers = equalSplitMembers.length > 0
+    ? equalSplitMembers.filter(u => availableUsers.includes(u))
+    : availableUsers;
+
+  const handleToggleEqualMember = (member: string) => {
+    const current = equalSplitMembers.length > 0
+      ? equalSplitMembers.filter(u => availableUsers.includes(u))
+      : [...availableUsers];
+    
+    if (current.includes(member)) {
+      if (current.length <= 1) return; // Keep at least one contributor
+      setEqualSplitMembers(current.filter(u => u !== member));
+    } else {
+      setEqualSplitMembers([...current, member]);
+    }
+  };
+
+  const handleSelectAllEqualMembers = () => {
+    setEqualSplitMembers([...availableUsers]);
+  };
+
+  const handleToggleEditEqualMember = (member: string) => {
+    const current = editEqualSplitMembers.length > 0
+      ? editEqualSplitMembers.filter(u => availableUsers.includes(u))
+      : [...availableUsers];
+    
+    if (current.includes(member)) {
+      if (current.length <= 1) return; // Keep at least one contributor
+      setEditEqualSplitMembers(current.filter(u => u !== member));
+    } else {
+      setEditEqualSplitMembers([...current, member]);
+    }
+  };
+
+  const handleSelectAllEditEqualMembers = () => {
+    setEditEqualSplitMembers([...availableUsers]);
+  };
+
   const handleManualMemberSync = async () => {
     if (isSyncingMembers) return;
     setIsSyncingMembers(true);
@@ -364,9 +426,12 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         userNetMap[payer] += amt;
 
         if (e.splitMode === 'Equal' || e.splitMode === '50/50 Equal' || !e.splitMode) {
-          const numMembers = Math.max(availableUsers.length, 1);
+          const participants = (e.splitMembers && Array.isArray(e.splitMembers) && e.splitMembers.length > 0)
+            ? e.splitMembers.filter(u => availableUsers.includes(u) || u === payer)
+            : availableUsers;
+          const numMembers = Math.max(participants.length, 1);
           const sharePerMember = amt / numMembers;
-          availableUsers.forEach(u => {
+          participants.forEach(u => {
             if (userNetMap[u] === undefined) userNetMap[u] = 0;
             userNetMap[u] -= sharePerMember;
           });
@@ -429,26 +494,38 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       const creditors: Array<{ name: string; bal: number }> = [];
 
       Object.entries(userNetMap).forEach(([name, net]) => {
-        if (net > 0.01) creditors.push({ name, bal: net });
-        else if (net < -0.01) debtors.push({ name, bal: Math.abs(net) });
+        const roundedNet = Math.round(net * 100) / 100;
+        if (roundedNet >= 0.01) creditors.push({ name, bal: roundedNet });
+        else if (roundedNet <= -0.01) debtors.push({ name, bal: Math.abs(roundedNet) });
       });
 
-      debtors.forEach(d => {
-        creditors.forEach(c => {
-          const oweAmt = Math.min(d.bal, c.bal);
-          if (oweAmt >= 0.01) {
-            results.push({
-              currency: curr,
-              debtor: d.name,
-              creditor: c.name,
-              amount: oweAmt,
-              summaryText: `${d.name} owes ${c.name}`
-            });
-            d.bal -= oweAmt;
-            c.bal -= oweAmt;
-          }
-        });
-      });
+      debtors.sort((a, b) => b.bal - a.bal);
+      creditors.sort((a, b) => b.bal - a.bal);
+
+      let dIdx = 0;
+      let cIdx = 0;
+
+      while (dIdx < debtors.length && cIdx < creditors.length) {
+        const deb = debtors[dIdx];
+        const cred = creditors[cIdx];
+        let oweAmt = Math.min(deb.bal, cred.bal);
+        oweAmt = Math.round(oweAmt * 100) / 100;
+
+        if (oweAmt >= 0.01) {
+          results.push({
+            currency: curr,
+            debtor: deb.name,
+            creditor: cred.name,
+            amount: oweAmt,
+            summaryText: `${deb.name} owes ${cred.name}`
+          });
+          deb.bal = Math.round((deb.bal - oweAmt) * 100) / 100;
+          cred.bal = Math.round((cred.bal - oweAmt) * 100) / 100;
+        }
+
+        if (deb.bal < 0.01) dIdx++;
+        if (cred.bal < 0.01) cIdx++;
+      }
     });
 
     return results;
@@ -465,8 +542,11 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     let finalShares: Record<string, number> | undefined = undefined;
     let finalPercentages: Record<string, number> | undefined = undefined;
     let finalSingleOwer: string | undefined = undefined;
+    let finalSplitMembers: string[] | undefined = undefined;
 
-    if (splitMode === 'Exact Amounts') {
+    if (splitMode === 'Equal' || splitMode === '50/50 Equal') {
+      finalSplitMembers = selectedEqualMembers.length > 0 ? selectedEqualMembers : availableUsers;
+    } else if (splitMode === 'Exact Amounts') {
       finalShares = {};
       availableUsers.forEach(u => {
         finalShares![u] = parseCleanNumber(exactShares[u]);
@@ -486,6 +566,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       currency,
       paidBy: paidBy.trim() || activeUser,
       splitMode,
+      splitMembers: finalSplitMembers,
       userAShare: finalShares ? finalShares[paidBy || activeUser] : undefined,
       userBShare: finalShares ? finalShares[otherUser] : undefined,
       userAPercent: finalPercentages ? finalPercentages[paidBy || activeUser] : undefined,
@@ -526,6 +607,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     } finally {
       setDescription('');
       setAmount('');
+      setEqualSplitMembers([]);
       setExactShares({});
       setPercentShares({});
       setActionLoading({ active: false, success: false, title: '', subtitle: '' });
@@ -601,6 +683,185 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     }
   };
 
+  // Edit Expense Modal Handlers
+  const handleOpenEditModal = (exp: Expense) => {
+    setEditingExpense(exp);
+    setEditDescription(exp.description || '');
+    setEditAmount(String(exp.amount || ''));
+    setEditCurrency(exp.currency || '₱');
+    setEditPaidBy(exp.paidBy || activeUser);
+
+    let mode: any = exp.splitMode || 'Equal';
+    if (mode === '50/50 Equal') mode = 'Equal';
+    setEditSplitMode(mode);
+
+    // Initialize equal split members
+    if (exp.splitMembers && Array.isArray(exp.splitMembers) && exp.splitMembers.length > 0) {
+      setEditEqualSplitMembers(exp.splitMembers);
+    } else {
+      setEditEqualSplitMembers([...availableUsers]);
+    }
+
+    // Initialize exact shares
+    const initialExact: Record<string, string> = {};
+    if (exp.shares && Object.keys(exp.shares).length > 0) {
+      availableUsers.forEach(u => {
+        initialExact[u] = exp.shares && exp.shares[u] !== undefined ? String(exp.shares[u]) : '';
+      });
+    } else {
+      const numMembers = Math.max(availableUsers.length, 1);
+      const even = ((Number(exp.amount) || 0) / numMembers).toFixed(2);
+      availableUsers.forEach(u => {
+        initialExact[u] = even;
+      });
+    }
+    setEditExactShares(initialExact);
+
+    // Initialize percentages
+    const initialPct: Record<string, string> = {};
+    if (exp.percentages && Object.keys(exp.percentages).length > 0) {
+      availableUsers.forEach(u => {
+        initialPct[u] = exp.percentages && exp.percentages[u] !== undefined ? String(exp.percentages[u]) : '';
+      });
+    } else {
+      const numMembers = Math.max(availableUsers.length, 1);
+      const evenPct = (100 / numMembers).toFixed(1);
+      availableUsers.forEach(u => {
+        initialPct[u] = evenPct;
+      });
+    }
+    setEditPercentShares(initialPct);
+
+    setEditSingleDebtor(exp.singleOwer || (availableUsers.find(u => u !== (exp.paidBy || activeUser)) || availableUsers[0]));
+    setShowDeleteConfirm(false);
+  };
+
+  const handleSaveEditedExpense = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingExpense) return;
+    const numAmt = parseCleanNumber(editAmount);
+    if (!editDescription.trim() || numAmt <= 0) return;
+
+    let finalShares: Record<string, number> | undefined = undefined;
+    let finalPercentages: Record<string, number> | undefined = undefined;
+    let finalSingleOwer: string | undefined = undefined;
+    let finalSplitMembers: string[] | undefined = undefined;
+
+    if (editSplitMode === 'Equal' || editSplitMode === '50/50 Equal') {
+      const chosen = editEqualSplitMembers.length > 0
+        ? editEqualSplitMembers.filter(u => availableUsers.includes(u))
+        : availableUsers;
+      finalSplitMembers = chosen;
+    } else if (editSplitMode === 'Exact Amounts') {
+      finalShares = {};
+      availableUsers.forEach(u => {
+        finalShares![u] = parseCleanNumber(editExactShares[u]);
+      });
+    } else if (editSplitMode === 'Percentages') {
+      finalPercentages = {};
+      availableUsers.forEach(u => {
+        finalPercentages![u] = parseCleanNumber(editPercentShares[u]);
+      });
+    } else if (editSplitMode === 'Single Payer (100% owed)') {
+      finalSingleOwer = editSingleDebtor || availableUsers.find(u => u !== editPaidBy) || availableUsers[0];
+    }
+
+    const updated: Expense = {
+      ...editingExpense,
+      description: editDescription.trim(),
+      amount: numAmt,
+      currency: editCurrency,
+      paidBy: editPaidBy.trim() || activeUser,
+      splitMode: editSplitMode,
+      splitMembers: finalSplitMembers,
+      userAShare: finalShares ? finalShares[editPaidBy || activeUser] : undefined,
+      userBShare: finalShares ? finalShares[otherUser] : undefined,
+      userAPercent: finalPercentages ? finalPercentages[editPaidBy || activeUser] : undefined,
+      userBPercent: finalPercentages ? finalPercentages[otherUser] : undefined,
+      shares: finalShares,
+      percentages: finalPercentages,
+      singleOwer: finalSingleOwer
+    };
+
+    const savedDesc = editDescription.trim();
+    const savedAmt = numAmt;
+    const savedCurr = editCurrency;
+
+    setActionLoading({
+      active: true,
+      success: false,
+      title: 'Updating Expense...',
+      subtitle: `Saving changes for ${savedCurr}${formatAmount(savedAmt)} to ledger & balances...`
+    });
+
+    const startTime = Date.now();
+    try {
+      if (onEditExpense) {
+        await onEditExpense(updated);
+      }
+      const elapsed = Date.now() - startTime;
+      if (elapsed < 500) {
+        await new Promise(r => setTimeout(r, 500 - elapsed));
+      }
+      setActionLoading({
+        active: true,
+        success: true,
+        title: 'Expense Updated!',
+        subtitle: `Ledger & balances have been recalculated.`
+      });
+      await new Promise(r => setTimeout(r, 550));
+      setEditingExpense(null);
+    } catch (err) {
+      console.error('Failed to update expense:', err);
+    } finally {
+      setActionLoading({ active: false, success: false, title: '', subtitle: '' });
+      setToastMessage(`Updated "${savedCurr}${formatAmount(savedAmt)} ${savedDesc}"`);
+      setShowSuccessToast(true);
+      setTimeout(() => setShowSuccessToast(false), 3000);
+    }
+  };
+
+  const handleDeleteExpenseAction = async () => {
+    if (!editingExpense) return;
+    setIsDeletingExpense(true);
+    const targetId = editingExpense.id;
+    const targetDesc = editingExpense.description;
+
+    setActionLoading({
+      active: true,
+      success: false,
+      title: 'Deleting Expense...',
+      subtitle: `Removing ${targetDesc} from shared ledger...`
+    });
+
+    const startTime = Date.now();
+    try {
+      if (onDeleteExpense) {
+        await onDeleteExpense(targetId);
+      }
+      const elapsed = Date.now() - startTime;
+      if (elapsed < 500) {
+        await new Promise(r => setTimeout(r, 500 - elapsed));
+      }
+      setActionLoading({
+        active: true,
+        success: true,
+        title: 'Expense Deleted',
+        subtitle: `Item removed from ledger and balances updated.`
+      });
+      await new Promise(r => setTimeout(r, 550));
+      setEditingExpense(null);
+    } catch (err) {
+      console.error('Failed to delete expense:', err);
+    } finally {
+      setIsDeletingExpense(false);
+      setActionLoading({ active: false, success: false, title: '', subtitle: '' });
+      setToastMessage(`Deleted "${targetDesc}"`);
+      setShowSuccessToast(true);
+      setTimeout(() => setShowSuccessToast(false), 3000);
+    }
+  };
+
   const exportCSV = () => {
     const headers = ['Timestamp', 'Type', 'Description', 'Amount', 'Currency', 'PaidBy', 'SplitMode', 'CreatedBy'];
     const expenseRows = expenses.map(e => [
@@ -662,11 +923,14 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
       {/* Header */}
       <header className="flex justify-between items-center pb-2 pt-0.5 shrink-0">
-        <div className="flex items-center space-x-2">
-          <h1 className="text-base font-bold tracking-tight text-[#1B1B19]">splitnest</h1>
-          {chatId && (
-            <span className="text-[10px] font-mono font-semibold px-2 py-0.5 bg-black/5 text-[#1B1B19]/70 rounded-md border border-black/5">
-              {chatId.startsWith('-') ? `Group ${chatId.substring(0, 7)}...` : `Chat ${chatId.substring(0, 6)}...`}
+        <div className="flex items-center space-x-2 min-w-0">
+          <h1 className="text-base font-bold tracking-tight text-[#1B1B19] shrink-0">splitnest</h1>
+          {(groupTitle || chatId) && (
+            <span 
+              className="text-[10px] font-mono font-semibold px-2 py-0.5 bg-black/5 text-[#1B1B19]/70 rounded-md border border-black/5 truncate max-w-[130px] sm:max-w-[200px]"
+              title={groupTitle || (chatId.startsWith('-') ? `Group ${chatId}` : `Chat ${chatId}`)}
+            >
+              {groupTitle || (chatId.startsWith('-') ? `Group ${chatId.substring(0, 7)}...` : `Chat ${chatId.substring(0, 6)}...`)}
             </span>
           )}
         </div>
@@ -894,36 +1158,66 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
               </div>
             </div>
 
-            {/* Equal Split Live Breakdown */}
-            {(splitMode === 'Equal' || splitMode === '50/50 Equal') && availableUsers.length > 1 && (
-              <div className="bg-white/40 p-2.5 rounded-xl border border-black/5 text-xs text-[#1B1B19]/80 space-y-1.5">
-                <div className="flex justify-between items-center text-[10px] font-mono text-[#1B1B19]/60 uppercase font-semibold">
-                  <span>Equal Share ({availableUsers.length} members)</span>
-                  <span>
-                    {parseCleanNumber(amount) > 0 
-                      ? `${currency}${formatAmount(parseCleanNumber(amount) / availableUsers.length)} / person` 
-                      : 'Enter amount above'}
-                  </span>
+            {/* Equal Split Live Breakdown & Contributor Selector */}
+            {(splitMode === 'Equal' || splitMode === '50/50 Equal') && availableUsers.length > 0 && (
+              <div className="bg-white/50 p-3 rounded-2xl border border-black/5 space-y-2.5 text-xs">
+                <div className="flex justify-between items-center">
+                  <div>
+                    <span className="font-mono text-[10px] uppercase tracking-wider text-[#1B1B19]/70 font-semibold block">
+                      Contributing Members ({selectedEqualMembers.length}/{availableUsers.length})
+                    </span>
+                    <p className="text-[10px] text-[#1B1B19]/50 font-mono">
+                      {selectedEqualMembers.length === availableUsers.length 
+                        ? 'All members contribute equally' 
+                        : `Splitting equally among ${selectedEqualMembers.length} selected`}
+                    </p>
+                  </div>
+                  {selectedEqualMembers.length !== availableUsers.length && (
+                    <button
+                      type="button"
+                      onClick={handleSelectAllEqualMembers}
+                      className="text-[10px] font-mono text-[#4A6CF7] hover:underline font-semibold"
+                    >
+                      Select All
+                    </button>
+                  )}
                 </div>
-                <div className="flex flex-wrap gap-1">
+
+                {/* Interactive Member Toggle Chips */}
+                <div className="flex flex-wrap gap-1.5">
                   {availableUsers.map(u => {
-                    const share = parseCleanNumber(amount) > 0 
-                      ? formatAmount(parseCleanNumber(amount) / availableUsers.length) 
-                      : '0.00';
+                    const isSelected = selectedEqualMembers.includes(u);
                     const isPayer = u === (paidBy || activeUser);
                     return (
-                      <span 
-                        key={u} 
-                        className={`px-2 py-0.5 rounded-md text-[10px] font-mono border ${
-                          isPayer 
-                            ? 'bg-[#1B1B19] text-white border-[#1B1B19] font-bold' 
-                            : 'bg-white text-[#1B1B19] border-black/5'
+                      <button
+                        key={u}
+                        type="button"
+                        onClick={() => handleToggleEqualMember(u)}
+                        className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-1.5 border transition cursor-pointer ${
+                          isSelected
+                            ? 'bg-[#1B1B19] text-white border-[#1B1B19] shadow-xs'
+                            : 'bg-white/80 text-[#1B1B19]/40 border-black/10 hover:border-black/20 hover:text-[#1B1B19]/70'
                         }`}
                       >
-                        {isPayer ? `Paid: ${u}` : u}: {currency}{share}
-                      </span>
+                        <div className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[8px] font-bold ${
+                          isSelected ? 'bg-white text-[#1B1B19]' : 'border border-black/20'
+                        }`}>
+                          {isSelected ? <Check className="w-2.5 h-2.5 stroke-[3]" /> : null}
+                        </div>
+                        <span>{u} {isPayer ? '(Payer)' : ''}</span>
+                      </button>
                     );
                   })}
+                </div>
+
+                {/* Live Per-Person Amount Display */}
+                <div className="pt-1.5 border-t border-black/5 flex items-center justify-between font-mono text-[11px]">
+                  <span className="text-[#1B1B19]/60">Share per person:</span>
+                  <span className="font-bold text-[#1B1B19] text-xs">
+                    {parseCleanNumber(amount) > 0 
+                      ? `${currency}${formatAmount(parseCleanNumber(amount) / Math.max(selectedEqualMembers.length, 1))} each` 
+                      : `${currency}0.00`}
+                  </span>
                 </div>
               </div>
             )}
@@ -1231,9 +1525,11 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         {activeTab === 'ledger' && (
           <div className="bg-white/70 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-sm space-y-3">
             <div className="flex items-center justify-between border-b border-black/5 pb-2">
-              {/* Expense History Header */}
-              <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold">
-                Expense History ({expenses.length})
+              <div>
+                <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold">
+                  Expense History ({expenses.length})
+                </div>
+                <p className="text-[10px] text-[#1B1B19]/40 font-mono mt-0.5">Tap any expense to edit or adjust split</p>
               </div>
               <button
                 type="button"
@@ -1252,21 +1548,51 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             ) : (
               <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
                 {expenses.map((exp, idx) => (
-                  <div key={idx} className="bg-white/60 p-3 rounded-xl border border-black/5 flex items-center justify-between text-xs">
-                    <div className="space-y-0.5">
-                      <div>
-                        <span className="font-semibold text-[#1B1B19]">{exp.description}</span>
+                  <div
+                    key={exp.id || idx}
+                    className="bg-white/70 hover:bg-white/95 p-3 rounded-2xl border border-black/5 hover:border-black/15 transition shadow-xs flex items-center justify-between text-xs group"
+                  >
+                    <div
+                      onClick={() => handleOpenEditModal(exp)}
+                      className="space-y-0.5 min-w-0 flex-1 cursor-pointer pr-2"
+                    >
+                      <div className="flex items-center space-x-1.5">
+                        <span className="font-bold text-[#1B1B19] text-sm truncate">{exp.description}</span>
+                        <span className="text-[9px] px-1.5 py-0.2 bg-black/5 text-[#1B1B19]/70 rounded-md font-mono shrink-0">
+                          {exp.splitMode === 'Single Payer (100% owed)' 
+                            ? '100% Owed' 
+                            : (exp.splitMode === 'Equal' || exp.splitMode === '50/50 Equal' || !exp.splitMode) && exp.splitMembers && exp.splitMembers.length > 0 && exp.splitMembers.length < availableUsers.length
+                              ? `Equal (${exp.splitMembers.length} of ${availableUsers.length})`
+                              : exp.splitMode}
+                        </span>
                       </div>
-                      <p className="text-[11px] text-[#1B1B19]/60">
-                        Paid by <strong>{exp.paidBy}</strong> • {exp.splitMode}
+                      <p className="text-[11px] text-[#1B1B19]/70">
+                        Paid by <strong className="text-[#1B1B19]">{exp.paidBy}</strong>
+                        {exp.singleOwer ? <span> • Owed by <strong className="text-[#1B1B19]">{exp.singleOwer}</strong></span> : null}
+                        {(exp.splitMode === 'Equal' || exp.splitMode === '50/50 Equal' || !exp.splitMode) && exp.splitMembers && exp.splitMembers.length > 0 && exp.splitMembers.length < availableUsers.length ? (
+                          <span> • Split: <span className="font-medium text-[#1B1B19]">{exp.splitMembers.join(', ')}</span></span>
+                        ) : null}
                       </p>
-                      <p className="text-[9px] text-[#1B1B19]/40 font-mono">{new Date(exp.timestamp).toLocaleDateString()}</p>
+                      <p className="text-[9px] text-[#1B1B19]/40 font-mono">
+                        {new Date(exp.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </p>
                     </div>
 
-                    <div className="text-right">
-                      <span className="font-bold font-mono text-[#1B1B19] text-sm">
-                        {exp.currency || '₱'}{formatAmount(Number(exp.amount))}
-                      </span>
+                    <div className="flex items-center space-x-2 shrink-0">
+                      <div className="text-right">
+                        <span className="font-bold font-mono text-[#1B1B19] text-sm">
+                          {exp.currency || '₱'}{formatAmount(Number(exp.amount))}
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEditModal(exp)}
+                        title="Edit expense"
+                        className="p-1.5 rounded-xl bg-black/5 hover:bg-[#1B1B19] text-[#1B1B19] hover:text-white transition flex items-center justify-center border border-black/5 hover:border-[#1B1B19] cursor-pointer"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -1386,6 +1712,407 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 Confirm Settle
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Expense Modal */}
+      {editingExpense && (
+        <div className="absolute inset-0 bg-black/50 backdrop-blur-md z-50 p-4 flex items-center justify-center overflow-y-auto">
+          <div className="bg-[#F8F7F4] border border-black/10 rounded-[32px] p-5 w-full max-w-sm max-h-[90vh] overflow-y-auto space-y-4 shadow-2xl my-auto">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-black/5 pb-2.5">
+              <div className="flex items-center space-x-2">
+                <div className="w-8 h-8 rounded-xl bg-[#1B1B19] text-white flex items-center justify-center text-xs shadow-md">
+                  <Pencil className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-[#1B1B19] text-sm">Edit Expense</h4>
+                  <p className="text-[10px] text-[#1B1B19]/60 font-mono">Update details or adjust split</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingExpense(null)}
+                className="text-[#1B1B19]/50 hover:text-[#1B1B19] p-1 rounded-lg transition font-mono text-xs"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditedExpense} className="space-y-3.5">
+              {/* Description Field */}
+              <div className="space-y-1">
+                <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
+                  Description
+                </label>
+                <input
+                  type="text"
+                  value={editDescription}
+                  onChange={e => setEditDescription(e.target.value)}
+                  placeholder="e.g. Dinner, Groceries, Grab"
+                  required
+                  className="w-full bg-white border border-black/10 px-3.5 py-2.5 rounded-xl text-xs text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20 placeholder:text-black/30 font-medium"
+                />
+              </div>
+
+              {/* Amount & Currency */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
+                    Amount & Currency
+                  </label>
+                  <div className="flex items-center space-x-1">
+                    {SUPPORTED_CURRENCIES.slice(0, 4).map(c => (
+                      <button
+                        key={c.symbol}
+                        type="button"
+                        onClick={() => setEditCurrency(c.symbol)}
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition ${
+                          editCurrency === c.symbol
+                            ? 'bg-[#1B1B19] text-white font-bold'
+                            : 'bg-black/5 text-[#1B1B19]/60 hover:bg-black/10'
+                        }`}
+                      >
+                        {c.symbol}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="relative">
+                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-mono font-bold text-[#1B1B19]/50 text-sm">
+                    {editCurrency}
+                  </span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={editAmount}
+                    onChange={e => {
+                      const val = e.target.value;
+                      if (val === '' || /^[0-9.,]*$/.test(val)) {
+                        setEditAmount(val);
+                      }
+                    }}
+                    onBlur={() => {
+                      if (editAmount && parseCleanNumber(editAmount) > 0) {
+                        setEditAmount(formatAmount(parseCleanNumber(editAmount)));
+                      }
+                    }}
+                    placeholder="0.00"
+                    required
+                    className="w-full bg-white border border-black/10 pl-8 pr-3.5 py-2.5 rounded-xl text-sm font-bold font-mono text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20 placeholder:text-black/20"
+                  />
+                </div>
+              </div>
+
+              {/* Paid By Field */}
+              <div className="space-y-1">
+                <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
+                  Paid By
+                </label>
+                <select
+                  value={editPaidBy}
+                  onChange={e => setEditPaidBy(e.target.value)}
+                  className="w-full bg-white border border-black/10 px-3.5 py-2 rounded-xl text-xs font-semibold text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20 cursor-pointer"
+                >
+                  {availableUsers.map(u => (
+                    <option key={u} value={u}>
+                      {u} {u === activeUser ? '(You)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Split Mode Selector */}
+              <div className="space-y-1.5">
+                <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
+                  Split Mode
+                </label>
+                <div className="grid grid-cols-2 gap-1.5 bg-black/5 p-1 rounded-xl">
+                  {[
+                    { id: 'Equal', label: 'Equal Split' },
+                    { id: 'Exact Amounts', label: 'Exact Amounts' },
+                    { id: 'Percentages', label: 'Percentages (%)' },
+                    { id: 'Single Payer (100% owed)', label: '100% Owed' }
+                  ].map(tab => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setEditSplitMode(tab.id as any)}
+                      className={`py-1.5 px-2 rounded-lg text-[11px] font-medium transition text-center ${
+                        editSplitMode === tab.id
+                          ? 'bg-[#1B1B19] text-white font-semibold shadow-xs'
+                          : 'text-[#1B1B19]/70 hover:text-[#1B1B19]'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Interactive Split Breakdown Area */}
+              <div className="bg-white/80 border border-black/5 rounded-2xl p-3 space-y-2">
+                {editSplitMode === 'Equal' && (
+                  <div className="space-y-2.5">
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <span className="text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/70 font-semibold block">
+                          Contributing Members ({editEqualSplitMembers.length}/{availableUsers.length})
+                        </span>
+                        <p className="text-[10px] text-[#1B1B19]/50 font-mono">
+                          {editEqualSplitMembers.length === availableUsers.length 
+                            ? 'All members contribute equally' 
+                            : `Splitting equally among ${editEqualSplitMembers.length} selected`}
+                        </p>
+                      </div>
+                      {editEqualSplitMembers.length !== availableUsers.length && (
+                        <button
+                          type="button"
+                          onClick={handleSelectAllEditEqualMembers}
+                          className="text-[10px] font-mono text-[#4A6CF7] hover:underline font-semibold"
+                        >
+                          Select All
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Member Toggle Chips in Edit Modal */}
+                    <div className="flex flex-wrap gap-1.5">
+                      {availableUsers.map(u => {
+                        const isSelected = editEqualSplitMembers.includes(u);
+                        const isPayer = u === editPaidBy;
+                        return (
+                          <button
+                            key={u}
+                            type="button"
+                            onClick={() => handleToggleEditEqualMember(u)}
+                            className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-1.5 border transition cursor-pointer ${
+                              isSelected
+                                ? 'bg-[#1B1B19] text-white border-[#1B1B19] shadow-xs'
+                                : 'bg-white/80 text-[#1B1B19]/40 border-black/10 hover:border-black/20 hover:text-[#1B1B19]/70'
+                            }`}
+                          >
+                            <div className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[8px] font-bold ${
+                              isSelected ? 'bg-white text-[#1B1B19]' : 'border border-black/20'
+                            }`}>
+                              {isSelected ? <Check className="w-2.5 h-2.5 stroke-[3]" /> : null}
+                            </div>
+                            <span>{u} {isPayer ? '(Payer)' : ''}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Live Per-Person Amount in Edit Modal */}
+                    <div className="pt-1.5 border-t border-black/5 flex items-center justify-between font-mono text-[11px]">
+                      <span className="text-[#1B1B19]/60">Share per person:</span>
+                      <span className="font-bold text-[#1B1B19] text-xs">
+                        {editCurrency}{formatAmount(parseCleanNumber(editAmount) / Math.max(editEqualSplitMembers.length, 1))} each
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {editSplitMode === 'Exact Amounts' && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-mono uppercase text-[#1B1B19]/60">Exact share per person</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const amt = parseCleanNumber(editAmount);
+                          const even = (amt / Math.max(availableUsers.length, 1)).toFixed(2);
+                          const updated: Record<string, string> = {};
+                          availableUsers.forEach(u => { updated[u] = even; });
+                          setEditExactShares(updated);
+                        }}
+                        className="text-[10px] text-[#4A6CF7] font-mono hover:underline"
+                      >
+                        Distribute Evenly
+                      </button>
+                    </div>
+
+                    <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1">
+                      {availableUsers.map(u => (
+                        <div key={u} className="flex items-center justify-between space-x-2 text-xs">
+                          <span className="truncate max-w-[120px] font-medium text-[#1B1B19]">{u}</span>
+                          <div className="relative w-28">
+                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 font-mono text-[11px] text-[#1B1B19]/40">{editCurrency}</span>
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={editExactShares[u] || ''}
+                              placeholder="0.00"
+                              onChange={e => {
+                                const val = e.target.value;
+                                if (val === '' || /^[0-9.,]*$/.test(val)) {
+                                  setEditExactShares({ ...editExactShares, [u]: val });
+                                }
+                              }}
+                              className="w-full bg-white border border-black/10 pl-6 pr-2 py-1 rounded-lg text-xs font-mono font-semibold text-[#1B1B19] focus:outline-none focus:ring-1 focus:ring-[#4A6CF7]"
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Exact shares validation summary */}
+                    {(() => {
+                      const values: string[] = Object.values(editExactShares);
+                      const totalEntered: number = values.reduce<number>((sum, v) => sum + parseCleanNumber(v), 0);
+                      const targetAmt: number = parseCleanNumber(editAmount);
+                      const diff: number = Math.abs(totalEntered - targetAmt);
+                      return (
+                        <div className="flex items-center justify-between pt-1 border-t border-black/5 text-[10px] font-mono">
+                          <span className="text-[#1B1B19]/60">Total allocated:</span>
+                          <span className={diff < 0.05 ? 'text-emerald-600 font-bold' : 'text-amber-600 font-bold'}>
+                            {editCurrency}{formatAmount(totalEntered)} / {editCurrency}{formatAmount(targetAmt)}
+                          </span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+
+                {editSplitMode === 'Percentages' && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-mono uppercase text-[#1B1B19]/60">Percentage share</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const evenPct = (100 / Math.max(availableUsers.length, 1)).toFixed(1);
+                          const updated: Record<string, string> = {};
+                          availableUsers.forEach(u => { updated[u] = evenPct; });
+                          setEditPercentShares(updated);
+                        }}
+                        className="text-[10px] text-[#4A6CF7] font-mono hover:underline"
+                      >
+                        Set Equal %
+                      </button>
+                    </div>
+
+                    <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1">
+                      {availableUsers.map(u => (
+                        <div key={u} className="flex items-center justify-between space-x-2 text-xs">
+                          <span className="truncate max-w-[120px] font-medium text-[#1B1B19]">{u}</span>
+                          <div className="relative w-24">
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={editPercentShares[u] || ''}
+                              placeholder="0"
+                              onChange={e => {
+                                const val = e.target.value;
+                                if (val === '' || /^[0-9.,]*$/.test(val)) {
+                                  setEditPercentShares({ ...editPercentShares, [u]: val });
+                                }
+                              }}
+                              className="w-full bg-white border border-black/10 pl-2 pr-6 py-1 rounded-lg text-xs font-mono font-semibold text-[#1B1B19] focus:outline-none focus:ring-1 focus:ring-[#4A6CF7]"
+                            />
+                            <span className="absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[11px] text-[#1B1B19]/40">%</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Percentage validation summary */}
+                    {(() => {
+                      const values: string[] = Object.values(editPercentShares);
+                      const totalPct: number = values.reduce<number>((sum, v) => sum + parseCleanNumber(v), 0);
+                      const isMatch: boolean = Math.abs(totalPct - 100) < 0.5;
+                      return (
+                        <div className="flex items-center justify-between pt-1 border-t border-black/5 text-[10px] font-mono">
+                          <span className="text-[#1B1B19]/60">Total percent:</span>
+                          <span className={isMatch ? 'text-emerald-600 font-bold' : 'text-amber-600 font-bold'}>
+                            {totalPct.toFixed(1)}% / 100%
+                          </span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+
+                {editSplitMode === 'Single Payer (100% owed)' && (
+                  <div className="space-y-1.5">
+                    <span className="text-[10px] font-mono uppercase text-[#1B1B19]/60 block">Who owes 100% of this?</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {availableUsers.map(u => (
+                        <button
+                          key={u}
+                          type="button"
+                          onClick={() => setEditSingleDebtor(u)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition ${
+                            editSingleDebtor === u
+                              ? 'bg-[#1B1B19] text-white border-[#1B1B19] font-semibold'
+                              : 'bg-white border-black/10 text-[#1B1B19]/70 hover:bg-black/5'
+                          }`}
+                        >
+                          {u}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Danger Zone: Delete Option */}
+              <div className="pt-1 border-t border-black/5">
+                {!showDeleteConfirm ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowDeleteConfirm(true)}
+                    className="text-[11px] text-rose-600 hover:text-rose-700 font-medium flex items-center space-x-1 hover:underline transition"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete this expense from ledger</span>
+                  </button>
+                ) : (
+                  <div className="bg-rose-50 border border-rose-200 rounded-xl p-2.5 space-y-2 text-xs">
+                    <p className="font-bold text-rose-900 leading-tight">Delete this expense?</p>
+                    <p className="text-[11px] text-rose-700">
+                      This will permanently remove it from history and recalculate balances.
+                    </p>
+                    <div className="flex space-x-2 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setShowDeleteConfirm(false)}
+                        className="flex-1 bg-white hover:bg-rose-100 text-rose-900 border border-rose-200 py-1.5 rounded-lg text-xs font-medium transition"
+                      >
+                        Keep Expense
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isDeletingExpense}
+                        onClick={handleDeleteExpenseAction}
+                        className="flex-1 bg-rose-600 hover:bg-rose-700 text-white py-1.5 rounded-lg text-xs font-semibold shadow-xs transition"
+                      >
+                        {isDeletingExpense ? 'Deleting...' : 'Yes, Delete'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Bottom Action Buttons */}
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setEditingExpense(null)}
+                  className="w-full bg-black/5 hover:bg-black/10 text-[#1B1B19] py-2.5 rounded-xl font-semibold text-xs transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="w-full bg-[#1B1B19] hover:bg-black text-white py-2.5 rounded-xl font-semibold text-xs shadow-md transition"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
