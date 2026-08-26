@@ -925,26 +925,43 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       <header className="flex justify-between items-center pb-2 pt-0.5 shrink-0">
         <div className="flex items-center space-x-2 min-w-0">
           <h1 className="text-base font-bold tracking-tight text-[#1B1B19] shrink-0">splitnest</h1>
-          {(groupTitle || chatId) && (
+          {groupTitle && groupTitle.trim() ? (
             <span 
               className="text-[10px] font-mono font-semibold px-2 py-0.5 bg-black/5 text-[#1B1B19]/70 rounded-md border border-black/5 truncate max-w-[130px] sm:max-w-[200px]"
-              title={groupTitle || (chatId.startsWith('-') ? `Group ${chatId}` : `Chat ${chatId}`)}
+              title={groupTitle}
             >
-              {groupTitle || (chatId.startsWith('-') ? `Group ${chatId.substring(0, 7)}...` : `Chat ${chatId.substring(0, 6)}...`)}
+              {groupTitle}
             </span>
+          ) : (
+            <div 
+              className="h-5 w-20 sm:w-28 bg-black/10 rounded-md animate-pulse shrink-0 border border-black/5" 
+              title="Loading group name..."
+            />
           )}
         </div>
 
         <div className="flex items-center space-x-1.5">
-          <button
-            type="button"
-            onClick={() => setShowMembersModal(true)}
-            title="View & manage group members"
-            className="text-[10px] font-mono font-medium px-2.5 py-1 bg-black/5 hover:bg-black/10 rounded-full text-[#1B1B19]/70 hover:text-[#1B1B19] flex items-center space-x-1.5 border border-black/5 transition cursor-pointer"
-          >
-            <Users className="w-3 h-3 text-[#1B1B19]/60" />
-            <span>{availableUsers.length} {availableUsers.length === 1 ? 'member' : 'members'}</span>
-          </button>
+          {availableUsers.length > 1 ? (
+            <button
+              type="button"
+              onClick={() => setShowMembersModal(true)}
+              title="View & manage group members"
+              className="text-[10px] font-mono font-medium px-2.5 py-1 bg-black/5 hover:bg-black/10 rounded-full text-[#1B1B19]/70 hover:text-[#1B1B19] flex items-center space-x-1.5 border border-black/5 transition cursor-pointer"
+            >
+              <Users className="w-3 h-3 text-[#1B1B19]/60" />
+              <span>{availableUsers.length} members</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setShowMembersModal(true)}
+              title="Loading group members..."
+              className="h-6 w-24 bg-black/10 rounded-full animate-pulse flex items-center justify-center space-x-1.5 px-2.5 py-1 border border-black/5 cursor-pointer"
+            >
+              <Users className="w-3 h-3 text-[#1B1B19]/30" />
+              <div className="h-2 w-10 bg-black/15 rounded-full" />
+            </button>
+          )}
 
           <div className="text-[10px] font-mono font-medium px-2.5 py-1 bg-black/5 rounded-full text-[#1B1B19]/70 flex items-center space-x-1.5 border border-black/5 select-none">
             <span className={`w-1.5 h-1.5 rounded-full ${isOnlineGas ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
