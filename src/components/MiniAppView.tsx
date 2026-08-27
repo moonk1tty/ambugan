@@ -945,27 +945,29 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             <button
               type="button"
               onClick={() => setShowMembersModal(true)}
-              title="View & manage group members"
-              className="text-[10px] font-mono font-medium px-2.5 py-1 bg-black/5 hover:bg-black/10 rounded-full text-[#1B1B19]/70 hover:text-[#1B1B19] flex items-center space-x-1.5 border border-black/5 transition cursor-pointer"
+              title={`View & manage ${availableUsers.length} group members`}
+              className="text-[10px] font-mono font-medium px-2 py-1 bg-black/5 hover:bg-black/10 rounded-full text-[#1B1B19]/70 hover:text-[#1B1B19] flex items-center space-x-1 border border-black/5 transition cursor-pointer"
             >
               <Users className="w-3 h-3 text-[#1B1B19]/60" />
-              <span>{availableUsers.length} members</span>
+              <span>{availableUsers.length}</span>
             </button>
           ) : (
             <button
               type="button"
               onClick={() => setShowMembersModal(true)}
               title="Loading group members..."
-              className="h-6 w-24 bg-black/10 rounded-full animate-pulse flex items-center justify-center space-x-1.5 px-2.5 py-1 border border-black/5 cursor-pointer"
+              className="h-6 w-10 bg-black/10 rounded-full animate-pulse flex items-center justify-center space-x-1 px-2 py-1 border border-black/5 cursor-pointer"
             >
               <Users className="w-3 h-3 text-[#1B1B19]/30" />
-              <div className="h-2 w-10 bg-black/15 rounded-full" />
+              <div className="h-2 w-2.5 bg-black/15 rounded-full" />
             </button>
           )}
 
-          <div className="text-[10px] font-mono font-medium px-2.5 py-1 bg-black/5 rounded-full text-[#1B1B19]/70 flex items-center space-x-1.5 border border-black/5 select-none">
-            <span className={`w-1.5 h-1.5 rounded-full ${isOnlineGas ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
-            <span>{isOnlineGas ? 'Synced' : 'Connecting'}</span>
+          <div 
+            title={isOnlineGas ? 'Synced with cloud' : 'Connecting...'}
+            className="p-1.5 bg-black/5 rounded-full text-[#1B1B19]/70 flex items-center justify-center border border-black/5 select-none"
+          >
+            <span className={`w-2 h-2 rounded-full ${isOnlineGas ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
           </div>
         </div>
       </header>
