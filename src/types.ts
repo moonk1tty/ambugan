@@ -3,6 +3,7 @@ export interface RegisteredUser {
   username: string;
   firstName: string;
   chatId: string;
+  name?: string;
   lastSeen?: string;
 }
 

@@ -668,6 +668,58 @@ export default function App() {
     }
   };
 
+  const handleAddMember = async (newMemberName: string) => {
+    if (!newMemberName || !newMemberName.trim()) return;
+    const cleanName = newMemberName.trim();
+
+    // 1. Optimistic local state update
+    const alreadyExists = registeredUsers.some(u => 
+      (u.firstName || u.name || '').toLowerCase() === cleanName.toLowerCase() ||
+      (u.username || '').toLowerCase().replace(/^@/, '') === cleanName.toLowerCase().replace(/^@/, '')
+    );
+
+    if (!alreadyExists) {
+      const newUser: RegisteredUser = {
+        userId: `NAME-${cleanName.replace(/[^a-zA-Z0-9]/g, '')}`,
+        firstName: cleanName,
+        username: cleanName.startsWith('@') ? cleanName.substring(1) : '',
+        name: cleanName,
+        chatId: chatId || '',
+        lastSeen: new Date().toISOString()
+      };
+      const updated = [...registeredUsers, newUser];
+      setRegisteredUsers(updated);
+      try {
+        localStorage.setItem(`splitnest_users_${chatId || 'default'}`, JSON.stringify(updated));
+      } catch (e) {}
+    }
+
+    // 2. Sync to GAS backend
+    if (gasUrl && gasUrl.startsWith('http')) {
+      try {
+        const currentChatId = chatId || getChatId();
+        const response = await fetch(gasUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'add_member',
+            name: cleanName,
+            chatId: currentChatId
+          })
+        });
+        const result = await response.json();
+        if (result.status === 'success' && result.data && Array.isArray(result.data.users)) {
+          setRegisteredUsers(result.data.users);
+          try {
+            localStorage.setItem(`splitnest_users_${currentChatId || 'default'}`, JSON.stringify(result.data.users));
+          } catch (e) {}
+        }
+      } catch (err) {
+        console.warn('Failed to add member to backend:', err);
+      }
+    }
+  };
+
   const handleRemoveMember = async (memberNameToRemove: string) => {
     if (!memberNameToRemove) return;
     const cleanTarget = memberNameToRemove.trim();
@@ -779,6 +831,7 @@ export default function App() {
             onDeleteExpense={handleDeleteExpense}
             onSettleUp={handleSettleUp}
             onSyncMembers={handleSyncMembers}
+            onAddMember={handleAddMember}
             onRemoveMember={handleRemoveMember}
             gasUrl={gasUrl}
             setGasUrl={setGasUrl}

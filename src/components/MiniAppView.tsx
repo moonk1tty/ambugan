@@ -31,6 +31,7 @@ interface MiniAppViewProps {
   onDeleteExpense?: (expenseId: string) => Promise<void> | void;
   onSettleUp: (settlement: Omit<Settlement, 'id' | 'timestamp'>) => Promise<void> | void;
   onSyncMembers?: () => Promise<void> | void;
+  onAddMember?: (memberName: string) => Promise<void> | void;
   onRemoveMember?: (memberName: string) => Promise<void> | void;
   gasUrl: string;
   setGasUrl: (url: string) => void;
@@ -60,6 +61,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   onDeleteExpense,
   onSettleUp,
   onSyncMembers,
+  onAddMember,
   onRemoveMember,
   gasUrl,
   setGasUrl,
@@ -77,6 +79,8 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [showAddCustomUser, setShowAddCustomUser] = useState(false);
   const [customUserName, setCustomUserName] = useState('');
   const [isSyncingMembers, setIsSyncingMembers] = useState(false);
+  const [manualMemberInput, setManualMemberInput] = useState('');
+  const [isAddingManualMember, setIsAddingManualMember] = useState(false);
   const [splitMode, setSplitMode] = useState<'Equal' | '50/50 Equal' | 'Exact Amounts' | 'Percentages' | 'Single Payer (100% owed)'>('Equal');
   const [equalSplitMembers, setEqualSplitMembers] = useState<string[]>([]);
   const [exactShares, setExactShares] = useState<Record<string, string>>({});
@@ -1091,45 +1095,15 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
                   Paid By ({availableUsers.length} members)
                 </label>
-                <div className="flex items-center space-x-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowMembersModal(true)}
-                    className="text-[10px] font-mono text-[#1B1B19]/60 hover:text-[#1B1B19] font-medium flex items-center space-x-1"
-                  >
-                    <Users className="w-2.5 h-2.5" />
-                    <span>Manage</span>
-                  </button>
-                  <span className="text-[#1B1B19]/20 text-[10px]">•</span>
-                  <button
-                    type="button"
-                    onClick={() => setShowAddCustomUser(!showAddCustomUser)}
-                    className="text-[10px] font-mono text-[#4A6CF7] hover:underline font-semibold"
-                  >
-                    {showAddCustomUser ? 'Cancel' : '+ Add Name'}
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowMembersModal(true)}
+                  className="text-[10px] font-mono text-[#1B1B19]/60 hover:text-[#1B1B19] font-medium flex items-center space-x-1 cursor-pointer"
+                >
+                  <Users className="w-2.5 h-2.5" />
+                  <span>Manage</span>
+                </button>
               </div>
-
-              {showAddCustomUser && (
-                <div className="p-2.5 bg-white/80 rounded-xl border border-black/5 flex items-center space-x-1.5">
-                  <input
-                    type="text"
-                    placeholder="Friend's Name (e.g. Chesco, Mark)"
-                    value={customUserName}
-                    onChange={e => setCustomUserName(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddCustomUser(); }}}
-                    className="flex-1 bg-white border border-black/10 px-2.5 py-1.5 rounded-lg text-xs font-medium text-[#1B1B19] focus:outline-none focus:ring-1 focus:ring-[#4A6CF7]"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleAddCustomUser}
-                    className="bg-[#1B1B19] text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-black transition"
-                  >
-                    Add
-                  </button>
-                </div>
-              )}
 
               <select
                 value={paidBy}
@@ -2412,6 +2386,40 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 </div>
               </div>
             )}
+
+            {/* Quick Add Member Form */}
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const name = manualMemberInput.trim();
+                if (!name || isAddingManualMember) return;
+                setIsAddingManualMember(true);
+                try {
+                  if (onAddMember) await onAddMember(name);
+                  setManualMemberInput('');
+                } catch (err) {
+                  console.error('Failed to add member:', err);
+                } finally {
+                  setIsAddingManualMember(false);
+                }
+              }}
+              className="flex items-center space-x-1.5 pt-1"
+            >
+              <input
+                type="text"
+                placeholder="Add member name or @handle..."
+                value={manualMemberInput}
+                onChange={(e) => setManualMemberInput(e.target.value)}
+                className="flex-1 bg-white border border-black/10 focus:border-[#1B1B19] rounded-xl px-3 py-2 text-xs font-mono outline-none text-[#1B1B19]"
+              />
+              <button
+                type="submit"
+                disabled={!manualMemberInput.trim() || isAddingManualMember}
+                className="bg-[#1B1B19] hover:bg-black disabled:opacity-40 text-white px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0"
+              >
+                {isAddingManualMember ? 'Adding...' : 'Add'}
+              </button>
+            </form>
 
             {/* Actions footer inside modal */}
             <div className="pt-1 space-y-2">
