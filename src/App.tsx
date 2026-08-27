@@ -307,35 +307,82 @@ export default function App() {
         const fetchedUsers: RegisteredUser[] = Array.isArray(result.data.users) ? [...result.data.users] : [];
 
         // Also harvest any distinct names from expenses & settlements to ensure no member is missed
-        const knownNames = new Set(fetchedUsers.map(u => (u.firstName || u.username || '').toLowerCase()));
+        const knownNames = new Set(fetchedUsers.map(u => (u.firstName || u.username || u.name || '').toLowerCase().replace(/^@/, '')));
+        
+        // Load custom added members and removed members from localStorage
+        const customMembersKey = `splitsquad_custom_members_${currentChatId}`;
+        const removedMembersKey = `splitsquad_removed_members_${currentChatId}`;
+        let localCustomMembers: RegisteredUser[] = [];
+        let removedNames: Set<string> = new Set();
+        try {
+          const rawCustom = localStorage.getItem(customMembersKey);
+          if (rawCustom) localCustomMembers = JSON.parse(rawCustom);
+        } catch (e) {}
+        try {
+          const rawRemoved = localStorage.getItem(removedMembersKey);
+          if (rawRemoved) {
+            const arr = JSON.parse(rawRemoved);
+            removedNames = new Set(arr.map((n: string) => n.toLowerCase().replace(/^@/, '')));
+          }
+        } catch (e) {}
+
+        // Merge locally added custom members
+        localCustomMembers.forEach(cm => {
+          const cleanName = (cm.firstName || cm.username || cm.name || '').toLowerCase().replace(/^@/, '');
+          if (cleanName && !knownNames.has(cleanName) && !removedNames.has(cleanName)) {
+            knownNames.add(cleanName);
+            fetchedUsers.push(cm);
+          }
+        });
+
+        // Filter out any explicitly removed members
+        const finalUsers = fetchedUsers.filter(u => {
+          const cleanName = (u.firstName || u.username || u.name || '').toLowerCase().replace(/^@/, '');
+          return !removedNames.has(cleanName);
+        });
+
+        finalUsers.forEach((e: RegisteredUser) => {
+          knownNames.add((e.firstName || e.username || e.name || '').toLowerCase().replace(/^@/, ''));
+        });
         
         fetchedExpenses.forEach((e: Expense) => {
-          if (e.paidBy && !knownNames.has(e.paidBy.toLowerCase()) && !e.paidBy.toLowerCase().includes('bot') && e.paidBy !== 'Alex' && e.paidBy !== 'Sam') {
-            knownNames.add(e.paidBy.toLowerCase());
-            fetchedUsers.push({ userId: `EXP-${e.paidBy}`, firstName: e.paidBy, username: '', chatId: e.chatId || '', lastSeen: '' });
+          const paidByClean = (e.paidBy || '').toLowerCase().replace(/^@/, '');
+          if (e.paidBy && !knownNames.has(paidByClean) && !paidByClean.includes('bot') && e.paidBy !== 'Alex' && e.paidBy !== 'Sam' && !removedNames.has(paidByClean)) {
+            knownNames.add(paidByClean);
+            finalUsers.push({ userId: `EXP-${e.paidBy}`, firstName: e.paidBy, username: '', name: e.paidBy, chatId: e.chatId || '', lastSeen: '' });
           }
         });
 
         fetchedSettlements.forEach((s: Settlement) => {
           [s.payer, s.receiver].forEach(name => {
-            if (name && !knownNames.has(name.toLowerCase()) && !name.toLowerCase().includes('bot') && name !== 'Alex' && name !== 'Sam') {
-              knownNames.add(name.toLowerCase());
-              fetchedUsers.push({ userId: `SET-${name}`, firstName: name, username: '', chatId: s.chatId || '', lastSeen: '' });
+            const nameClean = (name || '').toLowerCase().replace(/^@/, '');
+            if (name && !knownNames.has(nameClean) && !nameClean.includes('bot') && name !== 'Alex' && name !== 'Sam' && !removedNames.has(nameClean)) {
+              knownNames.add(nameClean);
+              finalUsers.push({ userId: `SET-${name}`, firstName: name, username: '', name: name, chatId: s.chatId || '', lastSeen: '' });
             }
           });
         });
 
         setExpenses(fetchedExpenses);
         setSettlements(fetchedSettlements);
-        setRegisteredUsers(fetchedUsers);
+        setRegisteredUsers(finalUsers);
+
+        if (currentChatId) {
+          localStorage.setItem(`${STORAGE_KEYS.EXPENSES}_${currentChatId}`, JSON.stringify(fetchedExpenses));
+          localStorage.setItem(`${STORAGE_KEYS.SETTLEMENTS}_${currentChatId}`, JSON.stringify(fetchedSettlements));
+          localStorage.setItem(`${STORAGE_KEYS.REGISTERED_USERS}_${currentChatId}`, JSON.stringify(finalUsers));
+        }
 
         // If we got more than 1 member or have completed member sync, dismiss loader
-        if (fetchedUsers.length > 1 || !forceMemberSync) {
+        if (finalUsers.length > 1 || !forceMemberSync) {
           setIsInitialLoading(false);
         }
       } else if (result.status === 'success' && Array.isArray(result.users)) {
         setIsOnlineGas(true);
         setRegisteredUsers(result.users);
+        if (currentChatId) {
+          localStorage.setItem(`${STORAGE_KEYS.REGISTERED_USERS}_${currentChatId}`, JSON.stringify(result.users));
+        }
         if (result.users.length > 1 || !forceMemberSync) {
           setIsInitialLoading(false);
         }
@@ -671,33 +718,58 @@ export default function App() {
   const handleAddMember = async (newMemberName: string) => {
     if (!newMemberName || !newMemberName.trim()) return;
     const cleanName = newMemberName.trim();
+    const currentChatId = chatId || getChatId();
+    const customMembersKey = `splitsquad_custom_members_${currentChatId}`;
+    const removedMembersKey = `splitsquad_removed_members_${currentChatId}`;
 
-    // 1. Optimistic local state update
+    // 1. Clear from removed list
+    try {
+      const rawRemoved = localStorage.getItem(removedMembersKey);
+      if (rawRemoved) {
+        const arr = JSON.parse(rawRemoved);
+        const filtered = arr.filter((n: string) => n.toLowerCase().replace(/^@/, '') !== cleanName.toLowerCase().replace(/^@/, ''));
+        localStorage.setItem(removedMembersKey, JSON.stringify(filtered));
+      }
+    } catch (e) {}
+
+    // 2. Optimistic local state update
+    const newUser: RegisteredUser = {
+      userId: `NAME-${cleanName.replace(/[^a-zA-Z0-9]/g, '')}`,
+      firstName: cleanName.startsWith('@') ? cleanName.substring(1) : cleanName,
+      username: cleanName.startsWith('@') ? cleanName : '',
+      name: cleanName,
+      chatId: currentChatId,
+      lastSeen: new Date().toISOString()
+    };
+
     const alreadyExists = registeredUsers.some(u => 
       (u.firstName || u.name || '').toLowerCase() === cleanName.toLowerCase() ||
       (u.username || '').toLowerCase().replace(/^@/, '') === cleanName.toLowerCase().replace(/^@/, '')
     );
 
+    let updated = registeredUsers;
     if (!alreadyExists) {
-      const newUser: RegisteredUser = {
-        userId: `NAME-${cleanName.replace(/[^a-zA-Z0-9]/g, '')}`,
-        firstName: cleanName,
-        username: cleanName.startsWith('@') ? cleanName.substring(1) : '',
-        name: cleanName,
-        chatId: chatId || '',
-        lastSeen: new Date().toISOString()
-      };
-      const updated = [...registeredUsers, newUser];
+      updated = [...registeredUsers, newUser];
       setRegisteredUsers(updated);
-      try {
-        localStorage.setItem(`splitnest_users_${chatId || 'default'}`, JSON.stringify(updated));
-      } catch (e) {}
     }
 
-    // 2. Sync to GAS backend
+    if (currentChatId) {
+      localStorage.setItem(`${STORAGE_KEYS.REGISTERED_USERS}_${currentChatId}`, JSON.stringify(updated));
+    }
+
+    // Save to custom members list for persistent merging
+    try {
+      const rawCustom = localStorage.getItem(customMembersKey);
+      const customList: RegisteredUser[] = rawCustom ? JSON.parse(rawCustom) : [];
+      if (!customList.some(c => (c.firstName || c.name || c.username || '').toLowerCase() === cleanName.toLowerCase())) {
+        customList.push(newUser);
+        localStorage.setItem(customMembersKey, JSON.stringify(customList));
+      }
+    } catch (e) {}
+
+    // 3. Sync to GAS backend
     if (gasUrl && gasUrl.startsWith('http')) {
       try {
-        const currentChatId = chatId || getChatId();
         const response = await fetch(gasUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -709,10 +781,8 @@ export default function App() {
         });
         const result = await response.json();
         if (result.status === 'success' && result.data && Array.isArray(result.data.users)) {
-          setRegisteredUsers(result.data.users);
-          try {
-            localStorage.setItem(`splitnest_users_${currentChatId || 'default'}`, JSON.stringify(result.data.users));
-          } catch (e) {}
+          // Re-fetch to guarantee sync with sheet
+          await fetchGasData(gasUrl, currentChatId);
         }
       } catch (err) {
         console.warn('Failed to add member to backend:', err);
@@ -724,8 +794,31 @@ export default function App() {
     if (!memberNameToRemove) return;
     const cleanTarget = memberNameToRemove.trim();
     const targetLower = cleanTarget.toLowerCase().replace(/^@/, '');
+    const currentChatId = chatId || getChatId();
+    const customMembersKey = `splitsquad_custom_members_${currentChatId}`;
+    const removedMembersKey = `splitsquad_removed_members_${currentChatId}`;
 
-    // 1. Optimistic local state update
+    // 1. Track in removed members list
+    try {
+      const rawRemoved = localStorage.getItem(removedMembersKey);
+      const removedList: string[] = rawRemoved ? JSON.parse(rawRemoved) : [];
+      if (!removedList.some(n => n.toLowerCase().replace(/^@/, '') === targetLower)) {
+        removedList.push(cleanTarget);
+        localStorage.setItem(removedMembersKey, JSON.stringify(removedList));
+      }
+    } catch (e) {}
+
+    // 2. Remove from custom members list
+    try {
+      const rawCustom = localStorage.getItem(customMembersKey);
+      if (rawCustom) {
+        const customList: RegisteredUser[] = JSON.parse(rawCustom);
+        const filtered = customList.filter(c => (c.firstName || c.name || c.username || '').toLowerCase().replace(/^@/, '') !== targetLower);
+        localStorage.setItem(customMembersKey, JSON.stringify(filtered));
+      }
+    } catch (e) {}
+
+    // 3. Optimistic local state update
     const updatedUsers = registeredUsers.filter(u => {
       const uName = (u.username || '').toLowerCase().replace(/^@/, '');
       const fName = (u.firstName || u.name || '').toLowerCase();
@@ -733,9 +826,9 @@ export default function App() {
       return uName !== targetLower && fName !== targetLower && uId !== targetLower;
     });
     setRegisteredUsers(updatedUsers);
-    try {
-      localStorage.setItem(`splitnest_users_${chatId || 'default'}`, JSON.stringify(updatedUsers));
-    } catch (e) {}
+    if (currentChatId) {
+      localStorage.setItem(`${STORAGE_KEYS.REGISTERED_USERS}_${currentChatId}`, JSON.stringify(updatedUsers));
+    }
 
     // If the active viewing user was the one removed, select another remaining member
     if (activeUser.toLowerCase().replace(/^@/, '') === targetLower) {
@@ -744,10 +837,9 @@ export default function App() {
       }
     }
 
-    // 2. Sync removal with Google Apps Script backend
+    // 4. Sync removal with Google Apps Script backend
     if (gasUrl && gasUrl.startsWith('http')) {
       try {
-        const currentChatId = chatId || getChatId();
         const response = await fetch(gasUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -759,14 +851,8 @@ export default function App() {
           })
         });
         const result = await response.json();
-        if (result.status === 'success' && result.data) {
-          setIsOnlineGas(true);
-          if (Array.isArray(result.data.users)) {
-            setRegisteredUsers(result.data.users);
-            try {
-              localStorage.setItem(`splitnest_users_${currentChatId || 'default'}`, JSON.stringify(result.data.users));
-            } catch (e) {}
-          }
+        if (result.status === 'success') {
+          await fetchGasData(gasUrl, currentChatId);
         }
       } catch (err) {
         console.warn('Failed to sync member removal with Google Apps Script backend:', err);
