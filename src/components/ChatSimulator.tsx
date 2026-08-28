@@ -85,8 +85,10 @@ export const ChatSimulator: React.FC<ChatSimulatorProps> = ({
       receiptData: {
         merchant: receipt.merchant,
         total: receipt.total,
+        currency: '₱',
         category: receipt.category,
         date: new Date().toISOString().slice(0, 10),
+        items: [{ name: receipt.merchant, price: receipt.total, quantity: 1, selected: true }],
         imageUrl: receipt.imageUrl
       }
     };

@@ -16,9 +16,17 @@ import {
   Trash2,
   Pencil,
   Check,
-  X
+  X,
+  Sparkles,
+  Camera,
+  Receipt,
+  Layers,
+  Zap
 } from 'lucide-react';
-import { Expense, Settlement, RegisteredUser, formatAmount } from '../types';
+import { Expense, Settlement, RegisteredUser, formatAmount, ReceiptItem, ParsedReceiptData } from '../types';
+import { ReceiptScannerModal } from './ReceiptScannerModal';
+import { ItemizedReceiptSplitter } from './ItemizedReceiptSplitter';
+import { ENVIRONMENTS, getStoredEnvironment, saveStoredEnvironment, AppEnvironment } from '../config/environments';
 
 interface MiniAppViewProps {
   expenses: Expense[];
@@ -87,6 +95,107 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [percentShares, setPercentShares] = useState<Record<string, string>>({});
   const [singleDebtor, setSingleDebtor] = useState<string>('');
   
+  const [showScannerModal, setShowScannerModal] = useState(false);
+  const [logSubTab, setLogSubTab] = useState<'quick' | 'splitter'>('quick');
+  const [showItemizedSplitter, setShowItemizedSplitter] = useState(false);
+  const [itemizedInitialData, setItemizedInitialData] = useState<ParsedReceiptData | null>(null);
+  const [scannedItemsPreview, setScannedItemsPreview] = useState<ReceiptItem[]>([]);
+
+  // Active Environment (main / test)
+  const [activeEnv, setActiveEnv] = useState<AppEnvironment>(() => getStoredEnvironment());
+
+  const handleSwitchEnvironment = (env: AppEnvironment) => {
+    setActiveEnv(env);
+    saveStoredEnvironment(env);
+    const cfg = ENVIRONMENTS[env];
+    if (cfg.defaultGasUrl) {
+      setInputGasUrl(cfg.defaultGasUrl);
+      setGasUrl(cfg.defaultGasUrl);
+    }
+  };
+
+  const handleApplyScannedReceipt = (data: {
+    description: string;
+    amount: number;
+    category: string;
+    items: ReceiptItem[];
+    currency: string;
+  }) => {
+    setDescription(data.description);
+    setAmount(String(data.amount));
+    if (data.currency) setCurrency(data.currency);
+    setScannedItemsPreview(data.items || []);
+    setSplitMode('Equal');
+    
+    // Also prepare for itemized modal if the user wants to open it
+    setItemizedInitialData({
+      merchant: data.description.replace(/^Receipt:\s*/, ''),
+      total: data.amount,
+      currency: data.currency || '₱',
+      category: data.category,
+      items: data.items
+    });
+
+    setToastMessage(`✨ Scanned ${data.currency}${formatAmount(data.amount)} from ${data.description}`);
+    setShowSuccessToast(true);
+    setTimeout(() => setShowSuccessToast(false), 3000);
+  };
+
+  const handleSaveItemizedExpense = async (data: {
+    description: string;
+    amount: number;
+    paidBy: string;
+    currency: string;
+    category: string;
+    shares: Record<string, number>;
+    itemsBreakdown: {
+      name: string;
+      price: number;
+      quantity: number;
+      assignedTo: string[];
+    }[];
+    tax: number;
+    tip: number;
+    discount: number;
+  }) => {
+    try {
+      setActionLoading({
+        active: true,
+        success: false,
+        title: 'Saving Itemized Receipt...',
+        subtitle: `Assigning dishes across members & syncing to cloud...`
+      });
+
+      await onAddExpense({
+        description: data.description,
+        amount: data.amount,
+        paidBy: data.paidBy || activeUser,
+        currency: data.currency || '₱',
+        splitMode: 'Exact Amounts',
+        shares: data.shares,
+        category: data.category || 'Food & Drink',
+        createdBy: activeUser,
+        chatId: chatId
+      });
+
+      setActionLoading({
+        active: true,
+        success: true,
+        title: 'Receipt Recorded!',
+        subtitle: `Split calculated for ${Object.keys(data.shares).length} group members.`
+      });
+      await new Promise(r => setTimeout(r, 650));
+
+      setToastMessage(`🧾 Saved ${data.description} (${data.currency}${formatAmount(data.amount)}) to Ledger`);
+      setShowSuccessToast(true);
+      setTimeout(() => setShowSuccessToast(false), 3500);
+    } catch (err: any) {
+      console.error('Failed to save itemized receipt:', err);
+    } finally {
+      setActionLoading({ active: false, success: false, title: '', subtitle: '' });
+    }
+  };
+
   // Toast & Modals
   const [showSuccessToast, setShowSuccessToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
@@ -945,6 +1054,21 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         </div>
 
         <div className="flex items-center space-x-1.5">
+          {/* Environment Indicator Pill */}
+          <button
+            type="button"
+            onClick={() => setShowSettingsModal(true)}
+            title={`Environment: ${ENVIRONMENTS[activeEnv].name}. Tap to switch or view credentials.`}
+            className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-full border transition cursor-pointer flex items-center space-x-1 ${
+              activeEnv === 'main'
+                ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                : 'bg-purple-50 text-purple-800 border-purple-200 hover:bg-purple-100'
+            }`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${activeEnv === 'main' ? 'bg-emerald-500' : 'bg-purple-500'}`}></span>
+            <span>{ENVIRONMENTS[activeEnv].badge}</span>
+          </button>
+
           {availableUsers.length > 1 ? (
             <button
               type="button"
@@ -967,12 +1091,14 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             </button>
           )}
 
-          <div 
-            title={isOnlineGas ? 'Synced with cloud' : 'Connecting...'}
-            className="p-1.5 bg-black/5 rounded-full text-[#1B1B19]/70 flex items-center justify-center border border-black/5 select-none"
+          <button 
+            type="button"
+            onClick={() => setShowSettingsModal(true)}
+            title={isOnlineGas ? 'Synced with cloud • Tap for settings' : 'Connecting... • Tap for settings'}
+            className="p-1.5 bg-black/5 hover:bg-black/10 rounded-full text-[#1B1B19]/70 flex items-center justify-center border border-black/5 transition cursor-pointer"
           >
-            <span className={`w-2 h-2 rounded-full ${isOnlineGas ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
-          </div>
+            <Settings className="w-3 h-3 text-[#1B1B19]/60" />
+          </button>
         </div>
       </header>
 
@@ -1034,11 +1160,68 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
         {/* TAB 1: LOG EXPENSE FORM */}
         {activeTab === 'new' && (
-          <form onSubmit={handleSingleSubmit} className="bg-white/70 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-sm space-y-3">
-            <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold flex justify-between items-center">
-              <span>Log Expense</span>
-              <span className="text-[9px] text-[#1B1B19]/40">Default: ₱ (PHP)</span>
+          <div className="space-y-3">
+            
+            {/* Sub-tabs under Log: Quick Entry vs Receipt Splitter */}
+            <div className="bg-black/5 p-1 rounded-2xl flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider font-semibold">
+              <button
+                type="button"
+                onClick={() => setLogSubTab('quick')}
+                className={`flex-1 py-2 px-3 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                  logSubTab === 'quick'
+                    ? 'bg-white text-[#1B1B19] shadow-xs font-bold'
+                    : 'text-[#1B1B19]/60 hover:text-[#1B1B19]'
+                }`}
+              >
+                <Zap className="w-3.5 h-3.5 text-amber-500" />
+                <span>Quick Entry</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setLogSubTab('splitter')}
+                className={`flex-1 py-2 px-3 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                  logSubTab === 'splitter'
+                    ? 'bg-white text-[#1B1B19] shadow-xs font-bold'
+                    : 'text-[#1B1B19]/60 hover:text-[#1B1B19]'
+                }`}
+              >
+                <Receipt className="w-3.5 h-3.5 text-[#4A6CF7]" />
+                <span>Receipt Splitter</span>
+              </button>
             </div>
+
+            {logSubTab === 'quick' && (
+              <form onSubmit={handleSingleSubmit} className="bg-white/70 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-sm space-y-3">
+                <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold flex justify-between items-center">
+                  <span>Log Expense (Manual)</span>
+                  <span className="text-[9px] text-[#1B1B19]/40 font-normal">Quick single bill entry</span>
+                </div>
+
+            {scannedItemsPreview.length > 0 && (
+              <div className="p-2.5 bg-indigo-50/80 border border-indigo-100 rounded-xl space-y-1.5">
+                <div className="flex items-center justify-between text-[10px] text-indigo-700 font-semibold">
+                  <span className="flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-amber-500" />
+                    {scannedItemsPreview.length} Parsed Items from Receipt
+                  </span>
+                  <button 
+                    type="button"
+                    onClick={() => setScannedItemsPreview([])}
+                    className="text-indigo-400 hover:text-indigo-600 text-[10px]"
+                  >
+                    Clear items
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
+                  {scannedItemsPreview.map((it, idx) => (
+                    <span key={idx} className="inline-flex items-center gap-1 text-[10px] bg-white border border-indigo-200/60 px-2 py-0.5 rounded-md text-indigo-900 font-medium">
+                      <span>{it.name}</span>
+                      <span className="font-bold font-mono text-indigo-600">{currency}{formatAmount(it.price)}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div>
               <input
@@ -1392,12 +1575,26 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
             <button
               type="submit"
-              className="w-full bg-[#1B1B19] hover:bg-black text-white font-semibold py-3.5 rounded-2xl text-sm transition shadow-md active:scale-[0.99] flex items-center justify-center space-x-2 mt-2"
+              className="w-full bg-[#1B1B19] hover:bg-black text-white font-semibold py-3.5 rounded-2xl text-sm transition shadow-md active:scale-[0.99] flex items-center justify-center space-x-2 mt-2 cursor-pointer"
             >
               <Send className="w-4 h-4" />
               <span>Submit Entry ({currency}{parseCleanNumber(amount) > 0 ? ` ${formatAmount(parseCleanNumber(amount))}` : ''})</span>
             </button>
           </form>
+        )}
+
+        {logSubTab === 'splitter' && (
+          <ItemizedReceiptSplitter
+            onSaveToLedger={handleSaveItemizedExpense}
+            groupMembers={availableUsers}
+            initialReceiptData={itemizedInitialData}
+            defaultPayer={paidBy || activeUser}
+            defaultCurrency={currency}
+            onOpenScanner={() => setShowScannerModal(true)}
+            onSwitchToQuickEntry={() => setLogSubTab('quick')}
+          />
+        )}
+          </div>
         )}
 
         {/* TAB 2: BALANCES & INDIVIDUAL SETTLEMENTS */}
@@ -2136,6 +2333,58 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
               </button>
             </div>
 
+            {/* Environment Profile Selector */}
+            <div className="space-y-1.5">
+              <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 flex items-center justify-between">
+                <span>Active Environment Profile</span>
+                <span className={`px-1.5 py-0.2 rounded font-bold text-[9px] ${
+                  activeEnv === 'main' ? 'bg-emerald-100 text-emerald-800' : 'bg-purple-100 text-purple-800'
+                }`}>
+                  {ENVIRONMENTS[activeEnv].badge}
+                </span>
+              </label>
+              <div className="grid grid-cols-2 gap-1.5 bg-black/5 p-1 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => handleSwitchEnvironment('main')}
+                  className={`py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center space-x-1 transition ${
+                    activeEnv === 'main'
+                      ? 'bg-white text-emerald-700 shadow-xs border border-emerald-200'
+                      : 'text-[#1B1B19]/60 hover:text-[#1B1B19]'
+                  }`}
+                >
+                  <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                  <span>📁 Main (Prod)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSwitchEnvironment('test')}
+                  className={`py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center space-x-1 transition ${
+                    activeEnv === 'test'
+                      ? 'bg-white text-purple-700 shadow-xs border border-purple-200'
+                      : 'text-[#1B1B19]/60 hover:text-[#1B1B19]'
+                  }`}
+                >
+                  <span className="w-2 h-2 rounded-full bg-purple-500"></span>
+                  <span>📁 Test Bot</span>
+                </button>
+              </div>
+              <div className="bg-white/80 p-2.5 rounded-xl border border-black/5 font-mono text-[10px] text-[#1B1B19]/80 space-y-0.5">
+                <div className="flex justify-between">
+                  <span className="text-[#1B1B19]/50">Bot:</span>
+                  <span className="font-semibold text-sky-600">@{ENVIRONMENTS[activeEnv].botUsername}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#1B1B19]/50">Sheet ID:</span>
+                  <span className="font-semibold truncate max-w-[170px]">{ENVIRONMENTS[activeEnv].spreadsheetId}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#1B1B19]/50">Mini App:</span>
+                  <span className="font-semibold text-[#4A6CF7]">{ENVIRONMENTS[activeEnv].miniAppShortName}</span>
+                </div>
+              </div>
+            </div>
+
             {/* Status indicator pill */}
             <div className={`p-3 rounded-2xl border text-xs font-mono flex items-start space-x-2.5 ${
               isOnlineGas 
@@ -2147,7 +2396,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 <p className="font-bold">{isOnlineGas ? '🟢 Live Sheet Connected' : '🟡 Sync Pending / Blocked'}</p>
                 <p className="text-[10px] leading-tight opacity-80">
                   {isOnlineGas 
-                    ? 'All members and expenses in your Google Sheet are syncing automatically.' 
+                    ? `Syncing live with ${ENVIRONMENTS[activeEnv].name} database.` 
                     : 'Google returned a login redirect. Verify "Execute as: Me" and "Who has access: Anyone".'}
                 </p>
               </div>
@@ -2536,6 +2785,22 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
           <span className="font-bold leading-none shrink-0">HISTORY</span>
         </button>
       </footer>
+
+      {/* Gemini AI OCR Receipt Scanner Modal */}
+      <ReceiptScannerModal
+        isOpen={showScannerModal}
+        onClose={() => setShowScannerModal(false)}
+        onApplyReceipt={handleApplyScannedReceipt}
+        onOpenItemizedSplitter={(data) => {
+          setItemizedInitialData(data);
+          setActiveTab('new');
+          setLogSubTab('splitter');
+          setShowScannerModal(false);
+        }}
+        groupMembers={availableUsers}
+        activeGasUrl={gasUrl}
+        activeChatId={chatId}
+      />
 
     </div>
   );

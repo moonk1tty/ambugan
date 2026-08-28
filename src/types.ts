@@ -46,19 +46,35 @@ export interface TelegramUser {
   photo_url?: string;
 }
 
+export interface ReceiptItem {
+  name: string;
+  price: number;
+  quantity?: number;
+  selected?: boolean;
+  assignedTo?: string[];
+}
+
+export interface ParsedReceiptData {
+  merchant: string;
+  total: number;
+  currency: string;
+  date?: string;
+  category?: string;
+  tax?: number;
+  tip?: number;
+  discount?: number;
+  items: ReceiptItem[];
+  summary?: string;
+  imageUrl?: string;
+}
+
 export interface GroupChatMessage {
   id: string;
   sender: string;
   text?: string;
   isBot?: boolean;
   timestamp: string;
-  receiptData?: {
-    merchant: string;
-    total: number;
-    category: string;
-    date: string;
-    imageUrl?: string;
-  };
+  receiptData?: ParsedReceiptData;
 }
 
 export function formatAmount(val: number | string | undefined | null, decimals: number = 2): string {
