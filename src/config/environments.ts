@@ -37,7 +37,7 @@ export const ENVIRONMENTS: Record<AppEnvironment, EnvironmentConfig> = {
     spreadsheetId: '1w7-vyYvVPO505o6UlbfI29LA8qOWtLpuWP4_lFXLym0',
     miniAppUrl: 'https://t.me/splistnest_test_bot/test',
     miniAppShortName: 'test',
-    defaultGasUrl: '',
+    defaultGasUrl: 'https://script.google.com/macros/s/AKfycbxWrWkiLh-zOHuMfoXhx2bKhuNbuCCZCsxfjKGoZae4D0iYtkTlHjQr7zBXu7RkymEJaA/exec',
     themeColor: '#8B5CF6',
     description: 'Safe testing sandbox connected to @splistnest_test_bot and dedicated test Google Sheet.'
   }
