@@ -5,7 +5,6 @@ export interface EnvironmentConfig {
   name: string;
   badge: string;
   botUsername: string;
-  botToken: string;
   botTokenMasked: string;
   spreadsheetId: string;
   miniAppUrl: string;
@@ -21,8 +20,7 @@ export const ENVIRONMENTS: Record<AppEnvironment, EnvironmentConfig> = {
     name: 'Production (Main)',
     badge: 'PROD',
     botUsername: 'splitnest_bot',
-    botToken: '8949508191:AAEnVE-w0bbqICLi_CJYkqiEXcbGkUcMi3I',
-    botTokenMasked: '8949508191:AAEnVE...cMi3I',
+    botTokenMasked: 'Configured in Apps Script Properties',
     spreadsheetId: '106hKhXEEObyEbWJDxu0dFax-fKUIiDmkO1klpPPSJuM',
     miniAppUrl: 'https://t.me/splitnest_bot/ambugan',
     miniAppShortName: 'ambugan',
@@ -35,8 +33,7 @@ export const ENVIRONMENTS: Record<AppEnvironment, EnvironmentConfig> = {
     name: 'Test Bot (Staging)',
     badge: 'TEST',
     botUsername: 'splistnest_test_bot',
-    botToken: '8975116420:AAG6KT1W-ooFG-zFq4QcEDWAL9U9AotRT2Y',
-    botTokenMasked: '8975116420:AAG6KT...RT2Y',
+    botTokenMasked: 'Configured in Apps Script Properties',
     spreadsheetId: '1w7-vyYvVPO505o6UlbfI29LA8qOWtLpuWP4_lFXLym0',
     miniAppUrl: 'https://t.me/splistnest_test_bot/test',
     miniAppShortName: 'test',
