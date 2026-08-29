@@ -1592,6 +1592,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             defaultCurrency={currency}
             onOpenScanner={() => setShowScannerModal(true)}
             onSwitchToQuickEntry={() => setLogSubTab('quick')}
+            gasUrl={gasUrl}
           />
         )}
           </div>

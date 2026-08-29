@@ -138,7 +138,7 @@ export const CodeViewer: React.FC<CodeViewerProps> = ({
         {selectedEnv === 'main' ? (
           <div className="flex flex-wrap items-center gap-3 font-mono text-[11px]">
             <span className="flex items-center gap-1 text-emerald-400 font-bold">
-              <Bot className="w-3.5 h-3.5" /> Main Bot: 8949508191...
+              <Bot className="w-3.5 h-3.5" /> @splitnest_bot
             </span>
             <span className="text-slate-600">•</span>
             <span className="flex items-center gap-1 text-slate-400">
@@ -152,7 +152,7 @@ export const CodeViewer: React.FC<CodeViewerProps> = ({
         ) : (
           <div className="flex flex-wrap items-center gap-3 font-mono text-[11px]">
             <span className="flex items-center gap-1 text-purple-400 font-bold">
-              <Bot className="w-3.5 h-3.5" /> Test Bot: 8975116420...
+              <Bot className="w-3.5 h-3.5" /> @splistnest_test_bot
             </span>
             <span className="text-slate-600">•</span>
             <span className="flex items-center gap-1 text-slate-400">

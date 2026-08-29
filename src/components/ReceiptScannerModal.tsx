@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { ParsedReceiptData, ReceiptItem, formatAmount } from '../types';
 import { compressReceiptImage } from '../lib/imageUtils';
+import { scanReceiptWithAI } from '../lib/ocrService';
 
 interface ReceiptScannerModalProps {
   isOpen: boolean;
@@ -143,33 +144,23 @@ export const ReceiptScannerModal: React.FC<ReceiptScannerModalProps> = ({
     setRateLimitSeconds(null);
 
     try {
-      // Direct call to our server route running real Gemini Vision
-      const response = await fetch('/api/scan-receipt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image: base64Image,
-          mimeType: mimeType || 'image/jpeg'
-        })
+      const result = await scanReceiptWithAI({
+        fileOrBase64: base64Image,
+        mimeType: mimeType || 'image/jpeg',
+        gasUrl: activeGasUrl
       });
 
-      const resData = await response.json().catch(() => ({}));
-
-      if (response.status === 429 || resData.isRateLimit) {
-        const retrySec = resData.retryAfter || 20;
+      if (result.isRateLimit) {
+        const retrySec = result.retryAfter || 20;
         setRateLimitSeconds(retrySec);
-        setErrorMsg(`Gemini free tier rate limit reached. Auto-ready in ${retrySec}s, or pick a sample receipt below.`);
+        setErrorMsg(`Gemini rate limit reached. Auto-ready in ${retrySec}s, or select a sample receipt below.`);
         setIsScanning(false);
         setScanStep('idle');
         return;
       }
 
-      if (!response.ok || !resData.success) {
-        throw new Error(resData.error || `Server responded with status ${response.status}`);
-      }
-
-      if (resData.success && resData.receipt) {
-        const r = resData.receipt;
+      if (result.success && result.receipt) {
+        const r = result.receipt;
         setParsedData({
           merchant: r.merchant || 'Unknown Merchant',
           date: r.date || new Date().toISOString().split('T')[0],
@@ -192,41 +183,7 @@ export const ReceiptScannerModal: React.FC<ReceiptScannerModalProps> = ({
         return;
       }
 
-      // Fallback check if GAS url supports action=scan_receipt
-      if (activeGasUrl && activeGasUrl.startsWith('http')) {
-        const gasRes = await fetch(`${activeGasUrl}${activeGasUrl.includes('?') ? '&' : '?'}action=scan_receipt`, {
-          method: 'POST',
-          body: JSON.stringify({
-            image_base64: base64Image.split(',')[1] || base64Image,
-            mime_type: mimeType
-          })
-        });
-        const gasJson = await gasRes.json();
-        if (gasJson.status === 'success' && gasJson.receipt) {
-          const r = gasJson.receipt;
-          setParsedData({
-            merchant: r.merchant || 'Unknown Merchant',
-            date: r.date || new Date().toISOString().split('T')[0],
-            total: Number(r.total) || 0,
-            currency: r.currency || '₱',
-            category: r.category || 'Food & Drink',
-            items: (r.items || []).map((it: any) => ({
-              name: it.name || 'Item',
-              price: Number(it.price) || 0,
-              quantity: Number(it.quantity) || 1,
-              selected: true
-            })),
-            summary: r.summary,
-            tax: Number(r.tax) || 0
-          });
-          setScanStep('parsed');
-          setIsScanning(false);
-          return;
-        }
-      }
-
-      throw new Error('Could not parse receipt contents.');
-
+      throw new Error(result.error || 'Unable to read receipt contents.');
     } catch (err: any) {
       console.error('OCR scan error:', err);
       setErrorMsg(err.message || 'Unable to parse receipt image. You can still select a sample receipt or enter items manually.');

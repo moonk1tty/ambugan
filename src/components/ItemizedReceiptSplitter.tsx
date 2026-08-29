@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { ReceiptItem, ParsedReceiptData, formatAmount } from '../types';
 import { compressReceiptImage } from '../lib/imageUtils';
+import { scanReceiptWithAI } from '../lib/ocrService';
 
 export interface SplitItem {
   id: string;
@@ -41,6 +42,7 @@ interface ItemizedReceiptSplitterProps {
   onSwitchToQuickEntry?: () => void;
   isOpenModal?: boolean;
   onCloseModal?: () => void;
+  gasUrl?: string;
 }
 
 export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = ({
@@ -52,7 +54,8 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
   onOpenScanner,
   onSwitchToQuickEntry,
   isOpenModal = false,
-  onCloseModal
+  onCloseModal,
+  gasUrl
 }) => {
   // Members list (ensure at least 2 default names if empty)
   const members = groupMembers.length > 0 ? groupMembers : ['Kate', 'Alex', 'Sam'];
@@ -208,33 +211,20 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
     setRateLimitSeconds(null);
 
     try {
-      // Compress image client-side to 1280px / ~150KB for fast transport and low token usage
-      const { base64, mimeType } = await compressReceiptImage(file, 1280, 0.85);
-
-      const response = await fetch('/api/scan-receipt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image: base64,
-          mimeType: mimeType
-        })
+      const result = await scanReceiptWithAI({
+        fileOrBase64: file,
+        gasUrl: gasUrl
       });
 
-      const resJson = await response.json().catch(() => ({}));
-
-      if (response.status === 429 || resJson.isRateLimit) {
-        const retrySec = resJson.retryAfter || 20;
+      if (result.isRateLimit) {
+        const retrySec = result.retryAfter || 20;
         setRateLimitSeconds(retrySec);
         setScanError(`Gemini free tier rate limit reached. Auto-ready in ${retrySec}s, or select a sample receipt below.`);
         return;
       }
 
-      if (!response.ok || !resJson.success) {
-        throw new Error(resJson.error || `Server responded with ${response.status}`);
-      }
-
-      if (resJson.success && resJson.receipt) {
-        const parsed = resJson.receipt;
+      if (result.success && result.receipt) {
+        const parsed = result.receipt;
         loadParsedReceipt({
           merchant: parsed.merchant || file.name.replace(/\.[^/.]+$/, ""),
           total: Number(parsed.total) || 0,
@@ -253,7 +243,7 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
         setScanSuccessMsg(`✨ OCR Vision extracted ${parsed.items?.length || 0} items from ${parsed.merchant || 'receipt'}`);
         setTimeout(() => setScanSuccessMsg(null), 4000);
       } else {
-        throw new Error('Could not parse receipt contents.');
+        throw new Error(result.error || 'Could not parse receipt contents.');
       }
     } catch (err: any) {
       console.error('Real OCR Upload Error:', err);
