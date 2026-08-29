@@ -687,7 +687,8 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       shares: finalShares,
       percentages: finalPercentages,
       singleOwer: finalSingleOwer,
-      createdBy: activeUser
+      createdBy: activeUser,
+      chatId: chatId
     };
 
     const savedDesc = description.trim();

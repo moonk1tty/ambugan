@@ -23,17 +23,39 @@
 // ==============================================================================
 // 1. CONFIGURATION — MAIN / PRODUCTION
 // ==============================================================================
-var TELEGRAM_BOT_TOKEN = (typeof PropertiesService !== "undefined" && PropertiesService.getScriptProperties && PropertiesService.getScriptProperties().getProperty("TELEGRAM_BOT_TOKEN")) || "YOUR_PRODUCTION_TELEGRAM_BOT_TOKEN_HERE";
+var TELEGRAM_BOT_TOKEN = "YOUR_PRODUCTION_TELEGRAM_BOT_TOKEN_HERE";
 var SPREADSHEET_ID = "106hKhXEEObyEbWJDxu0dFax-fKUIiDmkO1klpPPSJuM";
 var MINI_APP_URL = "https://t.me/splitnest_bot/ambugan";
-var GEMINI_API_KEY = (typeof PropertiesService !== "undefined" && PropertiesService.getScriptProperties && PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY")) || "YOUR_GEMINI_API_KEY_HERE";
+var GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE";
+
+function getBotToken() {
+  try {
+    if (typeof PropertiesService !== "undefined" && PropertiesService.getScriptProperties) {
+      var prop = PropertiesService.getScriptProperties().getProperty("TELEGRAM_BOT_TOKEN");
+      if (prop && prop.trim() && prop.indexOf("YOUR_") === -1) {
+        return prop.trim();
+      }
+    }
+  } catch (e) {}
+  return (typeof TELEGRAM_BOT_TOKEN !== "undefined" && TELEGRAM_BOT_TOKEN && TELEGRAM_BOT_TOKEN.indexOf("YOUR_") === -1) ? TELEGRAM_BOT_TOKEN : "";
+}
+
+function getGeminiApiKey() {
+  try {
+    if (typeof PropertiesService !== "undefined" && PropertiesService.getScriptProperties) {
+      var prop = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
+      if (prop && prop.trim() && prop.indexOf("YOUR_") === -1) {
+        return prop.trim();
+      }
+    }
+  } catch (e) {}
+  return (typeof GEMINI_API_KEY !== "undefined" && GEMINI_API_KEY && GEMINI_API_KEY.indexOf("YOUR_") === -1) ? GEMINI_API_KEY : "";
+}
 
 // SHEET TAB NAMES
 var SHEET_EXPENSES = "Expenses";
 var SHEET_SETTLEMENTS = "Settlements";
 var SHEET_USERS = "Users";
-
-var TELEGRAM_API_BASE = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN;
 
 // Cached Spreadsheet instance per execution
 var _cachedSpreadsheet = null;
@@ -154,9 +176,9 @@ function callGeminiGenerateContent(apiKey, parts, responseMimeType) {
 }
 
 function scanReceiptWithGemini(base64Image, mimeType) {
-  var apiKey = GEMINI_API_KEY;
-  if (!apiKey || apiKey === "YOUR_GEMINI_API_KEY_HERE") {
-    return { ok: false, error: "GEMINI_API_KEY is not configured in Code.gs" };
+  var apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    return { ok: false, error: "GEMINI_API_KEY is not configured in Script Properties or Code.gs" };
   }
   
   var cleanMime = mimeType || "image/jpeg";
@@ -376,7 +398,7 @@ function doPost(e) {
       }
     }
 
-    if (chatId && (chatId.indexOf("-") === 0 || Number(chatId) < 0)) {
+    if (chatId) {
       sendExpenseGroupNotification(chatId, expense);
     }
 
@@ -391,7 +413,7 @@ function doPost(e) {
     var updated = updateExpenseInSheet(expense, chatId);
     if (!updated) return createJsonResponse({ status: "error", message: "Expense ID not found" });
 
-    if (chatId && (chatId.indexOf("-") === 0 || Number(chatId) < 0)) {
+    if (chatId) {
       sendExpenseUpdatedGroupNotification(chatId, expense);
     }
 
@@ -421,7 +443,7 @@ function doPost(e) {
       if (settlement.receiver) registerSimpleName(chatId, settlement.receiver);
     }
 
-    if (chatId && (chatId.indexOf("-") === 0 || Number(chatId) < 0)) {
+    if (chatId) {
       sendSettlementGroupNotification(chatId, settlement);
     }
 
@@ -1217,8 +1239,12 @@ function getGroupBalanceTextSummary(chatId, isDetailedSummary, passedGroupTitle)
 }
 
 function sendTelegramMessage(chatId, text, replyMarkup) {
-  if (!TELEGRAM_BOT_TOKEN) return { ok: false, description: "No bot token configured" };
-  var url = TELEGRAM_API_BASE + "/sendMessage";
+  var token = getBotToken();
+  if (!token) {
+    Logger.log("sendTelegramMessage: No bot token configured in Script Properties or Code.gs");
+    return { ok: false, description: "No bot token configured" };
+  }
+  var url = "https://api.telegram.org/bot" + token + "/sendMessage";
   var payload = {
     chat_id: String(chatId),
     text: text,
@@ -1254,14 +1280,16 @@ function getAppReplyMarkup(chatId) {
 }
 
 function clearTelegramWebhookQueue() {
-  if (!TELEGRAM_BOT_TOKEN) return { ok: false, description: "No bot token configured" };
+  var token = getBotToken();
+  if (!token) return { ok: false, description: "No bot token configured" };
+  var apiBase = "https://api.telegram.org/bot" + token;
   var appUrl = "";
   try { appUrl = ScriptApp.getService().getUrl(); } catch(e) {}
   if (!appUrl) {
-    var delRes = UrlFetchApp.fetch(TELEGRAM_API_BASE + "/deleteWebhook?drop_pending_updates=true", { muteHttpExceptions: true });
+    var delRes = UrlFetchApp.fetch(apiBase + "/deleteWebhook?drop_pending_updates=true", { muteHttpExceptions: true });
     return JSON.parse(delRes.getContentText());
   }
-  var res = UrlFetchApp.fetch(TELEGRAM_API_BASE + "/setWebhook", {
+  var res = UrlFetchApp.fetch(apiBase + "/setWebhook", {
     method: "post",
     contentType: "application/json",
     payload: JSON.stringify({ 

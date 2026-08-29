@@ -81,11 +81,11 @@ export async function scanReceiptWithAI(options: ScanReceiptOptions): Promise<Sc
   let lastErrorMsg = '';
 
   // -------------------------------------------------------------
-  // STRATEGY 1: Try local Express server route (/api/scan-receipt)
-  // (Works when hosted with full-stack Node container in AI Studio)
+  // STRATEGY 1: Try /api/scan-receipt endpoint
+  // (Works on Vercel Serverless Function & AI Studio Express server)
   // -------------------------------------------------------------
   try {
-    const expressRes = await fetch('/api/scan-receipt', {
+    const apiRes = await fetch('/api/scan-receipt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -94,11 +94,19 @@ export async function scanReceiptWithAI(options: ScanReceiptOptions): Promise<Sc
       })
     });
 
-    // If endpoint exists and responded
-    if (expressRes.status !== 404 && expressRes.status !== 405) {
-      const data = await expressRes.json().catch(() => ({}));
+    const contentType = apiRes.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const data = await apiRes.json().catch(() => ({}));
 
-      if (expressRes.status === 429 || data.isRateLimit) {
+      if (apiRes.ok && data.success && data.receipt) {
+        return {
+          success: true,
+          receipt: normalizeReceiptData(data.receipt),
+          source: 'express'
+        };
+      }
+
+      if (apiRes.status === 429 || data.isRateLimit) {
         return {
           success: false,
           isRateLimit: true,
@@ -107,20 +115,12 @@ export async function scanReceiptWithAI(options: ScanReceiptOptions): Promise<Sc
         };
       }
 
-      if (expressRes.ok && data.success && data.receipt) {
-        return {
-          success: true,
-          receipt: normalizeReceiptData(data.receipt),
-          source: 'express'
-        };
-      }
-
       if (data.error) {
         lastErrorMsg = data.error;
       }
     }
-  } catch (expressErr: any) {
-    console.warn('Express /api/scan-receipt not available (running in static / Telegram Mini App context):', expressErr);
+  } catch (apiErr: any) {
+    console.warn('/api/scan-receipt request not available (falling back to Google Apps Script):', apiErr);
   }
 
   // -------------------------------------------------------------
@@ -128,7 +128,8 @@ export async function scanReceiptWithAI(options: ScanReceiptOptions): Promise<Sc
   // (Works in Telegram Mini App hosted statically on GitHub Pages/CDN)
   // -------------------------------------------------------------
   const activeEnv = getStoredEnvironment();
-  const fallbackGasUrl = gasUrl || ENVIRONMENTS[activeEnv]?.defaultGasUrl || ENVIRONMENTS.main.defaultGasUrl;
+  const savedGas = typeof localStorage !== 'undefined' ? (localStorage.getItem('splitsquad_gas_url') || '') : '';
+  const fallbackGasUrl = gasUrl || savedGas || ENVIRONMENTS[activeEnv]?.defaultGasUrl || ENVIRONMENTS.main.defaultGasUrl;
 
   if (fallbackGasUrl && fallbackGasUrl.startsWith('http')) {
     try {
@@ -156,11 +157,17 @@ export async function scanReceiptWithAI(options: ScanReceiptOptions): Promise<Sc
         }
 
         if (gasData.message || gasData.error) {
-          const msg = gasData.message || gasData.error;
+          const msg = String(gasData.message || gasData.error);
           if (msg.includes('GEMINI_API_KEY')) {
             return {
               success: false,
-              error: 'Gemini API key is not configured in Google Apps Script properties. Please set GEMINI_API_KEY in your Apps Script Project Settings.'
+              error: 'GEMINI_API_KEY is not configured in Google Apps Script properties. Please set GEMINI_API_KEY in your Apps Script Project Settings.'
+            };
+          }
+          if (msg.includes('Unknown action: scan_receipt')) {
+            return {
+              success: false,
+              error: 'Google Apps Script needs to be updated. Please copy the latest Code.gs into your Apps Script editor and click "Deploy > New deployment".'
             };
           }
           if (msg.includes('429') || msg.includes('quota') || msg.includes('RESOURCE_EXHAUSTED')) {
@@ -182,7 +189,7 @@ export async function scanReceiptWithAI(options: ScanReceiptOptions): Promise<Sc
 
   return {
     success: false,
-    error: lastErrorMsg || 'OCR backend is unavailable. You can enter expense items manually or pick a sample receipt.'
+    error: lastErrorMsg || 'OCR backend is unavailable. Please verify GEMINI_API_KEY is configured in Vercel Environment Variables or your Apps Script Script Properties.'
   };
 }
 

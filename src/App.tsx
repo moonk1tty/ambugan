@@ -490,23 +490,27 @@ export default function App() {
   }, [chatId, gasUrl, fetchGasData]);
 
   const handleAddExpense = async (newExp: Omit<Expense, 'id' | 'timestamp'>) => {
+    const currentChatId = newExp.chatId || chatId || getChatId();
     const created: Expense = {
       ...newExp,
       id: 'EXP-' + Date.now(),
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      chatId: currentChatId
     };
 
     // Optimistic local state and localStorage update
     const updatedExpenses = [created, ...expenses];
     setExpenses(updatedExpenses);
     try {
-      localStorage.setItem(`splitnest_expenses_${chatId || 'default'}`, JSON.stringify(updatedExpenses));
+      localStorage.setItem(`splitnest_expenses_${currentChatId || 'default'}`, JSON.stringify(updatedExpenses));
+      if (currentChatId) {
+        localStorage.setItem(`${STORAGE_KEYS.EXPENSES}_${currentChatId}`, JSON.stringify(updatedExpenses));
+      }
     } catch (e) {}
 
     // Send to GAS backend if URL is configured
     if (gasUrl && gasUrl.startsWith('http')) {
       try {
-        const currentChatId = chatId || getChatId();
         const tg = (window as any).Telegram?.WebApp;
         const tgUser = tg?.initDataUnsafe?.user;
 
