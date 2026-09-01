@@ -34,9 +34,46 @@ async function startServer() {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
+  // Track backend OCR state & rate limits
+  let isBackendOcrDisabled = process.env.ENABLE_OCR === "false" || process.env.DISABLE_OCR === "true";
+  let ocrRateLimitResetTime = 0;
+
+  // OCR Status endpoint to proactively inform frontend if feature is disabled or rate limited
+  app.get("/api/ocr-status", (req, res) => {
+    const isRateLimited = Date.now() < ocrRateLimitResetTime;
+    const retryAfter = isRateLimited ? Math.max(1, Math.ceil((ocrRateLimitResetTime - Date.now()) / 1000)) : 0;
+    
+    res.json({
+      enabled: !isBackendOcrDisabled,
+      isRateLimited: isRateLimited,
+      retryAfterSeconds: retryAfter,
+      maintenanceMessage: isBackendOcrDisabled 
+        ? "AI Receipt Upload is temporarily under works. Please log items manually below." 
+        : null
+    });
+  });
+
   // OCR Receipt Scan Endpoint with Gemini Vision
   app.post("/api/scan-receipt", async (req, res) => {
     try {
+      if (isBackendOcrDisabled) {
+        return res.status(503).json({
+          success: false,
+          isDisabled: true,
+          error: "Upload receipt feature is currently under works. Please enter items manually."
+        });
+      }
+
+      if (Date.now() < ocrRateLimitResetTime) {
+        const remaining = Math.max(1, Math.ceil((ocrRateLimitResetTime - Date.now()) / 1000));
+        return res.status(429).json({
+          success: false,
+          isRateLimit: true,
+          retryAfter: remaining,
+          error: `Gemini API Free Tier rate limit reached. Auto-ready in ${remaining}s, or enter dishes manually.`
+        });
+      }
+
       const { image, base64, mimeType } = req.body;
       const rawData = image || base64;
       if (!rawData) {
@@ -312,11 +349,12 @@ IMPORTANT PHILIPPINES & VAT-INCLUSIVE RECEIPT RULES:
       }
 
       if (isRateLimited && !parsed) {
+        ocrRateLimitResetTime = Date.now() + retryDelaySeconds * 1000;
         return res.status(429).json({
           success: false,
           isRateLimit: true,
           retryAfter: retryDelaySeconds,
-          error: `Gemini API Free Tier rate limit reached. Please wait ~${retryDelaySeconds} seconds before scanning another receipt, or enter dishes manually.`
+          error: `Gemini API Free Tier rate limit reached. Auto-ready in ${retryDelaySeconds}s, or enter dishes manually.`
         });
       }
 

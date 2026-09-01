@@ -34,8 +34,40 @@ export interface ScanReceiptResult {
   receipt?: ParsedReceiptData;
   error?: string;
   isRateLimit?: boolean;
+  isDisabled?: boolean;
   retryAfter?: number;
   source?: 'express' | 'apps_script';
+}
+
+/**
+ * Check backend OCR status (enabled vs disabled vs rate limited)
+ */
+export async function checkOcrBackendStatus(): Promise<{
+  enabled: boolean;
+  isRateLimited: boolean;
+  retryAfterSeconds: number;
+  maintenanceMessage: string | null;
+}> {
+  try {
+    const res = await fetch('/api/ocr-status');
+    if (res.ok) {
+      const data = await res.json();
+      return {
+        enabled: data.enabled !== false,
+        isRateLimited: !!data.isRateLimited,
+        retryAfterSeconds: data.retryAfterSeconds || 0,
+        maintenanceMessage: data.maintenanceMessage || null
+      };
+    }
+  } catch (e) {
+    // If running in pure static or error, default to enabled
+  }
+  return {
+    enabled: true,
+    isRateLimited: false,
+    retryAfterSeconds: 0,
+    maintenanceMessage: null
+  };
 }
 
 /**
@@ -112,6 +144,14 @@ export async function scanReceiptWithAI(options: ScanReceiptOptions): Promise<Sc
           isRateLimit: true,
           retryAfter: data.retryAfter || 20,
           error: data.error || 'Gemini API rate limit reached. Please wait a moment before trying again.'
+        };
+      }
+
+      if (apiRes.status === 503 || data.isDisabled) {
+        return {
+          success: false,
+          isDisabled: true,
+          error: data.error || 'Upload receipt feature is currently under works. Please enter items manually.'
         };
       }
 

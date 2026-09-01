@@ -2,11 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Receipt, Sparkles, Camera, Plus, Trash2, Check, User, 
   Calculator, AlertCircle, RefreshCw, X, CheckCircle2,
-  DollarSign, ArrowRight, Layers, FileText, ArrowUpDown, Clock
+  DollarSign, ArrowRight, Layers, FileText, ArrowUpDown, Clock,
+  Wrench, Construction, Send
 } from 'lucide-react';
 import { ReceiptItem, ParsedReceiptData, formatAmount } from '../types';
 import { compressReceiptImage } from '../lib/imageUtils';
-import { scanReceiptWithAI } from '../lib/ocrService';
+import { scanReceiptWithAI, checkOcrBackendStatus } from '../lib/ocrService';
 
 export interface SplitItem {
   id: string;
@@ -33,7 +34,7 @@ interface ItemizedReceiptSplitterProps {
     tax: number;
     tip: number;
     discount: number;
-  }) => void;
+  }) => Promise<void> | void;
   groupMembers: string[];
   initialReceiptData?: ParsedReceiptData | null;
   defaultPayer?: string;
@@ -43,6 +44,8 @@ interface ItemizedReceiptSplitterProps {
   isOpenModal?: boolean;
   onCloseModal?: () => void;
   gasUrl?: string;
+  submitButtonLabel?: string;
+  isEditing?: boolean;
 }
 
 export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = ({
@@ -55,7 +58,9 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
   onSwitchToQuickEntry,
   isOpenModal = false,
   onCloseModal,
-  gasUrl
+  gasUrl,
+  submitButtonLabel,
+  isEditing = false
 }) => {
   // Members list (ensure at least 2 default names if empty)
   const members = groupMembers.length > 0 ? groupMembers : ['Kate', 'Alex', 'Sam'];
@@ -77,14 +82,49 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
 
   // Real OCR State
   const [isScanning, setIsScanning] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanSuccessMsg, setScanSuccessMsg] = useState<string | null>(null);
   const [rateLimitSeconds, setRateLimitSeconds] = useState<number | null>(null);
+  const [isOcrDisabled, setIsOcrDisabled] = useState(false);
+  const [maintenanceNote, setMaintenanceNote] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Initial check of backend OCR status
+  useEffect(() => {
+    let mounted = true;
+    checkOcrBackendStatus().then(status => {
+      if (!mounted) return;
+      if (!status.enabled) {
+        setIsOcrDisabled(true);
+        setMaintenanceNote(status.maintenanceMessage || 'Upload receipt feature is under works. Please enter items manually.');
+      } else if (status.isRateLimited && status.retryAfterSeconds > 0) {
+        setRateLimitSeconds(status.retryAfterSeconds);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   // New Item Input State (for quick manual addition)
   const [newItemName, setNewItemName] = useState('');
   const [newItemPrice, setNewItemPrice] = useState('');
+
+  const clearForm = () => {
+    setMerchant('');
+    setItems([]);
+    setTax(0);
+    setTip(0);
+    setDiscount(0);
+    setNewItemName('');
+    setNewItemPrice('');
+    setScanError(null);
+    setScanSuccessMsg(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
 
   // Keep paidBy in sync if default changes
   useEffect(() => {
@@ -141,61 +181,61 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
   }, [rateLimitSeconds]);
 
   // Demo receipt loader for instant testing without API quota limits
-  const loadDemoReceipt = (type: 'italian' | 'ramen' | 'cafe') => {
+  const loadDemoReceipt = (type: 'store' | 'groceries' | 'cafe') => {
     setScanError(null);
     setRateLimitSeconds(null);
-    if (type === 'italian') {
-      // Philippine Restaurant with 10% Service Charge & PWD Discount + VAT Exemption
+    if (type === 'store') {
+      // General Store / Retail receipt
       loadParsedReceipt({
-        merchant: 'Manam Comfort Filipino',
+        merchant: 'Uniqlo / General Store',
         total: 1540.00,
         currency: '₱',
-        category: 'Food & Drink',
-        tax: 0.00, // In PH, 12% VAT is already in SKU item prices
-        tip: 140.00, // 10% Service Charge
-        discount: 180.00, // PWD Discount + VAT Exemption deduction
+        category: 'Shopping',
+        tax: 0.00,
+        tip: 0.00,
+        discount: 180.00, // Promo discount
         items: [
-          { name: '🍲 House Crispy Sisig (Large)', price: 540.00, quantity: 1, assignedTo: [...members] },
-          { name: '🍚 Garlic Sinangag Rice Platter', price: 260.00, quantity: 1, assignedTo: [...members] },
-          { name: '🍖 Sinigang na Beef Short Rib & Watermelon', price: 620.00, quantity: 1, assignedTo: [members[0] || 'Kate', members[1] || 'Alex'] },
-          { name: '🥤 Ube Sago Shake (2x)', price: 300.00, quantity: 2, assignedTo: [members[0] || 'Kate', members[2] || 'Sam'] }
+          { name: '👕 Crew Neck T-Shirt (Large)', price: 540.00, quantity: 1, assignedTo: [...members] },
+          { name: '🧦 Ankle Socks 3-Pack', price: 260.00, quantity: 1, assignedTo: [...members] },
+          { name: '👖 Relaxed Fit Chino Pants', price: 620.00, quantity: 1, assignedTo: [members[0] || 'Kate', members[1] || 'Alex'] },
+          { name: '🧢 Twill Baseball Cap (2x)', price: 300.00, quantity: 2, assignedTo: [members[0] || 'Kate', members[2] || 'Sam'] }
         ]
       });
-      setScanSuccessMsg('✨ Loaded sample Manam receipt (10% SC & PWD/VAT Exemption applied).');
-    } else if (type === 'ramen') {
+      setScanSuccessMsg('✨ Loaded sample store receipt (with promo discount).');
+    } else if (type === 'groceries') {
       loadParsedReceipt({
-        merchant: 'Ippudo Ramen Bar (BGC)',
+        merchant: 'Supermarket & Essentials',
         total: 1480.00,
         currency: '₱',
-        category: 'Food & Drink',
-        tax: 0.00, // 12% VAT included in Ramen prices
-        tip: 130.00, // 10% Service Charge
+        category: 'Groceries',
+        tax: 0.00,
+        tip: 0.00,
         discount: 0,
         items: [
-          { name: '🍜 Shiromaru Classic Ramen', price: 495.00, quantity: 1, assignedTo: [members[0] || 'Kate'] },
-          { name: '🍜 Akamaru Shinaji Ramen', price: 535.00, quantity: 1, assignedTo: [members[1] || 'Alex'] },
-          { name: '🥟 Hakata Gyoza (5 pcs)', price: 240.00, quantity: 1, assignedTo: [...members] },
-          { name: '🥤 Cold Hojicha Green Tea', price: 80.00, quantity: 1, assignedTo: [members[0] || 'Kate'] }
+          { name: '📦 Cleaning & Household Supplies', price: 495.00, quantity: 1, assignedTo: [members[0] || 'Kate'] },
+          { name: '🧴 Shampoo & Body Wash', price: 535.00, quantity: 1, assignedTo: [members[1] || 'Alex'] },
+          { name: '🧻 Paper Towels & Tissues', price: 240.00, quantity: 1, assignedTo: [...members] },
+          { name: '🔋 AA Batteries Pack', price: 210.00, quantity: 1, assignedTo: [members[0] || 'Kate'] }
         ]
       });
-      setScanSuccessMsg('✨ Loaded sample Ramen Bar receipt with Service Charge.');
+      setScanSuccessMsg('✨ Loaded sample supermarket receipt.');
     } else {
       loadParsedReceipt({
-        merchant: 'Wildflour Cafe + Bakery',
+        merchant: 'Office Supplies & Print',
         total: 1195.00,
         currency: '₱',
-        category: 'Food & Drink',
-        tax: 0.00, // VAT inclusive
-        tip: 110.00, // Service Charge
-        discount: 95.00, // Senior / PWD & VAT exemption
+        category: 'Services',
+        tax: 0.00,
+        tip: 0.00,
+        discount: 95.00,
         items: [
-          { name: '☕ Oat Milk Honey Latte', price: 240.00, quantity: 1, assignedTo: [members[0] || 'Kate'] },
-          { name: '🥐 Salted Egg Croissant', price: 195.00, quantity: 1, assignedTo: [members[0] || 'Kate'] },
-          { name: '🍳 Wildflour Breakfast Platter', price: 590.00, quantity: 1, assignedTo: [members[1] || 'Alex'] },
-          { name: '🍰 Carrot Cake Slice', price: 160.00, quantity: 1, assignedTo: [...members] }
+          { name: '📁 Document Folders (10x)', price: 240.00, quantity: 1, assignedTo: [members[0] || 'Kate'] },
+          { name: '🖊️ Gel Pen Multipack', price: 195.00, quantity: 1, assignedTo: [members[0] || 'Kate'] },
+          { name: '📄 A4 Copy Paper Reams (2x)', price: 590.00, quantity: 1, assignedTo: [members[1] || 'Alex'] },
+          { name: '✂️ Heavy Duty Scissors & Tape', price: 160.00, quantity: 1, assignedTo: [...members] }
         ]
       });
-      setScanSuccessMsg('✨ Loaded sample Cafe receipt with PWD/VAT exemption.');
+      setScanSuccessMsg('✨ Loaded sample supplies receipt.');
     }
     setTimeout(() => setScanSuccessMsg(null), 4000);
   };
@@ -223,6 +263,12 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
         return;
       }
 
+      if (result.isDisabled) {
+        setIsOcrDisabled(true);
+        setMaintenanceNote(result.error || 'Upload receipt feature is under works. Please enter items manually.');
+        return;
+      }
+
       if (result.success && result.receipt) {
         const parsed = result.receipt;
         loadParsedReceipt({
@@ -247,7 +293,7 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
       }
     } catch (err: any) {
       console.error('Real OCR Upload Error:', err);
-      setScanError(err.message || 'Failed to read receipt. You can enter dishes manually below.');
+      setScanError(err.message || 'Failed to read receipt. You can enter items manually below.');
     } finally {
       setIsScanning(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -311,13 +357,13 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
   };
 
   // Calculations
-  const foodSubtotal = items.reduce((sum, item) => sum + (Number(item.price) || 0), 0);
+  const itemSubtotal = items.reduce((sum, item) => sum + (Number(item.price) || 0), 0);
   const extraTotal = (Number(tax) || 0) + (Number(tip) || 0) - (Number(discount) || 0);
-  const grandTotal = Math.max(0, foodSubtotal + extraTotal);
+  const grandTotal = Math.max(0, itemSubtotal + extraTotal);
 
   // Per-member calculation logic
   const memberBreakdowns: Record<string, {
-    foodShare: number;
+    itemShare: number;
     extraShare: number;
     totalOwed: number;
     itemsAssigned: string[];
@@ -326,47 +372,47 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
   // Initialize
   members.forEach(m => {
     memberBreakdowns[m] = {
-      foodShare: 0,
+      itemShare: 0,
       extraShare: 0,
       totalOwed: 0,
       itemsAssigned: []
     };
   });
 
-  // 1. Calculate food share per item
+  // 1. Calculate item share per member
   items.forEach(item => {
     const assignedCount = item.assignedMembers.length;
     if (assignedCount > 0) {
       const sharePerPerson = (Number(item.price) || 0) / assignedCount;
       item.assignedMembers.forEach(m => {
         if (!memberBreakdowns[m]) {
-          memberBreakdowns[m] = { foodShare: 0, extraShare: 0, totalOwed: 0, itemsAssigned: [] };
+          memberBreakdowns[m] = { itemShare: 0, extraShare: 0, totalOwed: 0, itemsAssigned: [] };
         }
-        memberBreakdowns[m].foodShare += sharePerPerson;
+        memberBreakdowns[m].itemShare += sharePerPerson;
         memberBreakdowns[m].itemsAssigned.push(item.name);
       });
     }
   });
 
   // 2. Distribute tax, tip, discount
-  const activeParticipants = members.filter(m => memberBreakdowns[m].foodShare > 0);
+  const activeParticipants = members.filter(m => memberBreakdowns[m].itemShare > 0);
 
   members.forEach(m => {
     let extraShare = 0;
     if (extraTotal !== 0) {
       if (taxDistributionMode === 'proportional') {
-        if (foodSubtotal > 0) {
-          extraShare = (memberBreakdowns[m].foodShare / foodSubtotal) * extraTotal;
+        if (itemSubtotal > 0) {
+          extraShare = (memberBreakdowns[m].itemShare / itemSubtotal) * extraTotal;
         }
       } else {
         // Even split across active participants
-        if (activeParticipants.length > 0 && memberBreakdowns[m].foodShare > 0) {
+        if (activeParticipants.length > 0 && memberBreakdowns[m].itemShare > 0) {
           extraShare = extraTotal / activeParticipants.length;
         }
       }
     }
     memberBreakdowns[m].extraShare = extraShare;
-    memberBreakdowns[m].totalOwed = Math.max(0, memberBreakdowns[m].foodShare + extraShare);
+    memberBreakdowns[m].totalOwed = Math.max(0, memberBreakdowns[m].itemShare + extraShare);
   });
 
   // Final shares map for ledger
@@ -376,9 +422,11 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
   });
 
   // Save to Ledger
-  const handleSave = () => {
+  const handleSave = async () => {
+    if (isSubmitting) return;
+
     if (items.length === 0) {
-      setScanError('Please add at least one item or dish to split.');
+      setScanError('Please add at least one item to split.');
       return;
     }
 
@@ -388,73 +436,44 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
       return;
     }
 
-    onSaveToLedger({
-      description: merchant.trim() ? `Receipt: ${merchant.trim()}` : 'Itemized Receipt',
-      amount: Number(grandTotal.toFixed(2)),
-      paidBy: paidBy || members[0],
-      currency,
-      category,
-      shares: computedShares,
-      itemsBreakdown: items.map(it => ({
-        name: it.name,
-        price: it.price,
-        quantity: it.quantity,
-        assignedTo: it.assignedMembers
-      })),
-      tax: Number(tax) || 0,
-      tip: Number(tip) || 0,
-      discount: Number(discount) || 0
-    });
+    setIsSubmitting(true);
+    setScanError(null);
 
-    if (onCloseModal) {
-      onCloseModal();
+    try {
+      await onSaveToLedger({
+        description: merchant.trim() ? `Receipt: ${merchant.trim()}` : 'Itemized Receipt',
+        amount: Number(grandTotal.toFixed(2)),
+        paidBy: paidBy || members[0],
+        currency,
+        category,
+        shares: computedShares,
+        itemsBreakdown: items.map(it => ({
+          name: it.name,
+          price: it.price,
+          quantity: it.quantity,
+          assignedTo: it.assignedMembers
+        })),
+        tax: Number(tax) || 0,
+        tip: Number(tip) || 0,
+        discount: Number(discount) || 0
+      });
+
+      // Clear the receipt splitter form / tab state after successful submission
+      clearForm();
+
+      if (onCloseModal) {
+        onCloseModal();
+      }
+    } catch (err: any) {
+      console.error('Failed to submit itemized receipt:', err);
+      setScanError(err?.message || 'Failed to submit receipt log. Please try again.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const content = (
     <div className="space-y-4">
-      {/* Real OCR Action Bar */}
-      <div className="bg-white/80 backdrop-blur-md border border-black/5 rounded-[24px] p-4 shadow-xs flex flex-wrap items-center justify-between gap-2.5">
-        <div>
-          <div className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold">
-            <Receipt className="w-3.5 h-3.5 text-[#4A6CF7]" />
-            <span>Itemized Dish Splitter</span>
-          </div>
-          <p className="text-xs text-[#1B1B19]/70 mt-0.5">
-            Assign individual items to members with automatic proportional tax & tip.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <input 
-            type="file" 
-            ref={fileInputRef} 
-            onChange={handleFileUpload} 
-            accept="image/*" 
-            className="hidden" 
-          />
-
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isScanning}
-            className="px-3 py-1.5 bg-[#1B1B19] hover:bg-black text-white rounded-xl text-xs font-mono font-semibold transition flex items-center gap-1.5 shadow-xs cursor-pointer disabled:opacity-50"
-          >
-            {isScanning ? (
-              <>
-                <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#4A6CF7]" />
-                <span>Reading Receipt...</span>
-              </>
-            ) : (
-              <>
-                <Camera className="w-3.5 h-3.5 text-amber-400" />
-                <span>Upload Receipt (AI OCR)</span>
-              </>
-            )}
-          </button>
-        </div>
-      </div>
-
       {/* Notifications & Rate Limit Recovery Banner */}
       {scanSuccessMsg && (
         <div className="p-3.5 bg-emerald-50 border border-emerald-200/80 rounded-2xl flex items-center gap-2.5 text-emerald-800 text-xs animate-in fade-in">
@@ -481,7 +500,7 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
             </button>
           </div>
 
-          {/* Action buttons: Rate limit countdown or sample loaders */}
+          {/* Sample Loaders */}
           <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-amber-200/60">
             {rateLimitSeconds && rateLimitSeconds > 0 ? (
               <div className="flex items-center gap-1.5 text-[11px] font-mono font-semibold text-amber-900 bg-amber-100/80 px-2.5 py-1 rounded-lg">
@@ -493,37 +512,95 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
             <span className="text-[10px] font-mono text-[#1B1B19]/50 uppercase tracking-wider">Sample Receipts:</span>
             <button
               type="button"
-              onClick={() => loadDemoReceipt('italian')}
+              onClick={() => loadDemoReceipt('store')}
               className="px-2.5 py-1 bg-white hover:bg-black/5 text-[#1B1B19] border border-black/10 rounded-lg text-[11px] font-mono font-medium transition cursor-pointer"
             >
-              🇵🇭 Manam (10% SC + PWD/VAT Exemption)
+              🏷️ Retail Store
             </button>
             <button
               type="button"
-              onClick={() => loadDemoReceipt('ramen')}
+              onClick={() => loadDemoReceipt('groceries')}
               className="px-2.5 py-1 bg-white hover:bg-black/5 text-[#1B1B19] border border-black/10 rounded-lg text-[11px] font-mono font-medium transition cursor-pointer"
             >
-              🍜 Ippudo Ramen (Service Charge)
+              🛒 Supermarket
             </button>
             <button
               type="button"
               onClick={() => loadDemoReceipt('cafe')}
               className="px-2.5 py-1 bg-white hover:bg-black/5 text-[#1B1B19] border border-black/10 rounded-lg text-[11px] font-mono font-medium transition cursor-pointer"
             >
-              🥐 Wildflour Cafe
+              📄 Supplies & Print
             </button>
           </div>
         </div>
       )}
 
       {/* ┌────────────────────────────────────────────────────────┐
-          │ 🧾 Trattoria Bella                                     │
-          │ Total: $56.50 • Paid by: [ Kate ▼ ]                    │
+          │ 🧾 Receipt Header & Upload OCR                          │
+          │ Merchant • Paid by • Currency & Subtotal               │
           └────────────────────────────────────────────────────────┘ */}
       <div className="bg-white/80 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-xs space-y-3.5">
-        <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold flex justify-between items-center">
-          <span>Receipt Header</span>
-          <span className="text-[9px] text-[#1B1B19]/40 font-normal">Step 1 of 3</span>
+        <div className="flex flex-col gap-2 border-b border-black/5 pb-2.5">
+          <div className="flex items-center gap-2">
+            <input 
+              type="file" 
+              ref={fileInputRef} 
+              onChange={handleFileUpload} 
+              accept="image/*" 
+              className="hidden" 
+            />
+
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isScanning || isOcrDisabled || (rateLimitSeconds !== null && rateLimitSeconds > 0)}
+              className="w-full flex-1 bg-[#1B1B19] hover:bg-black text-white py-2.5 px-4 rounded-xl text-xs font-mono font-semibold transition flex items-center justify-center gap-2 shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.99]"
+            >
+              {isScanning ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#4A6CF7]" />
+                  <span>Reading Receipt...</span>
+                </>
+              ) : isOcrDisabled ? (
+                <>
+                  <Wrench className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Upload Receipt (Under Works)</span>
+                </>
+              ) : (rateLimitSeconds !== null && rateLimitSeconds > 0) ? (
+                <>
+                  <Clock className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Rate Limited (Wait {rateLimitSeconds}s)</span>
+                </>
+              ) : (
+                <>
+                  <Camera className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Upload Receipt</span>
+                  <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                </>
+              )}
+            </button>
+
+            {(items.length > 0 || merchant) && (
+              <button
+                type="button"
+                onClick={clearForm}
+                disabled={isSubmitting || isScanning}
+                className="px-3 py-2.5 bg-black/5 hover:bg-black/10 text-[#1B1B19]/70 hover:text-[#1B1B19] rounded-xl text-xs font-mono font-medium transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shrink-0"
+                title="Clear all fields and reset"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-[#1B1B19]/60" />
+                <span>Clear</span>
+              </button>
+            )}
+          </div>
+
+          {/* Under works / Maintenance Notice */}
+          {isOcrDisabled && (
+            <div className="px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center gap-2 text-amber-900 text-[11px] font-mono animate-in fade-in">
+              <Construction className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+              <span>{maintenanceNote || 'Upload receipt feature is under works. Please enter items manually below.'}</span>
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
@@ -538,7 +615,7 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
                 type="text"
                 value={merchant}
                 onChange={(e) => setMerchant(e.target.value)}
-                placeholder="e.g. Trattoria Bella"
+                placeholder="e.g. Uniqlo / SM Store"
                 className="w-full bg-white border border-black/10 pl-9 pr-3 py-2 rounded-xl text-xs font-semibold text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20"
               />
             </div>
@@ -581,7 +658,7 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
           </div>
 
           <div className="flex items-center gap-2 font-mono">
-            <span className="text-[11px] text-[#1B1B19]/60">Food Subtotal: <strong>{currency}{formatAmount(foodSubtotal)}</strong></span>
+            <span className="text-[11px] text-[#1B1B19]/60">Items Subtotal: <strong>{currency}{formatAmount(itemSubtotal)}</strong></span>
             <span>•</span>
             <span className="text-sm font-bold text-[#1B1B19]">
               Total: <strong className="text-emerald-700">{currency}{formatAmount(grandTotal)}</strong>
@@ -591,15 +668,15 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
       </div>
 
       {/* ┌────────────────────────────────────────────────────────┐
-          │ 🍝 ITEM ROWS: "Who shared this?"                       │
+          │ 📦 ITEM ROWS: "Who shared this?"                       │
           │    [👤 Kate ✓]  [👤 Alex ✓]  [👤 Sam ]                 │
           └────────────────────────────────────────────────────────┘ */}
       <div className="bg-white/80 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-xs space-y-3">
         <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold flex justify-between items-center">
           <div className="flex items-center gap-1.5">
-            <span>Dishes & Items ({items.length})</span>
+            <span>Items & Charges ({items.length})</span>
           </div>
-          <span className="text-[9px] text-[#1B1B19]/40 font-normal">Assign per dish</span>
+          <span className="text-[9px] text-[#1B1B19]/40 font-normal">Assign per item</span>
         </div>
 
         <div className="space-y-2.5">
@@ -611,7 +688,7 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
               <div>
                 <p className="text-xs font-bold text-[#1B1B19]">No items in receipt yet</p>
                 <p className="text-[10px] text-[#1B1B19]/50 font-mono mt-0.5 max-w-xs mx-auto">
-                  Upload a receipt photo above for AI OCR extraction, or add dishes manually below.
+                  Upload a receipt photo above for AI extraction, or add items manually below.
                 </p>
               </div>
             </div>
@@ -625,7 +702,7 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
                   key={item.id}
                   className="bg-white border border-black/10 hover:border-black/20 rounded-2xl p-3.5 space-y-2.5 shadow-xs transition min-w-0 overflow-hidden"
                 >
-                  {/* Dish Name & Line Price */}
+                  {/* Item Name & Line Price */}
                   <div className="flex items-center justify-between gap-2 min-w-0">
                     <div className="flex-1 min-w-0 flex items-center gap-2">
                       <input
@@ -633,7 +710,7 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
                         value={item.name}
                         onChange={(e) => handleItemFieldChange(item.id, 'name', e.target.value)}
                         className="bg-transparent font-semibold text-[#1B1B19] text-xs sm:text-sm focus:outline-none focus:bg-black/5 px-2 py-1 rounded-lg w-full min-w-0 border-b border-transparent focus:border-[#4A6CF7]"
-                        placeholder="Dish or item name"
+                        placeholder="Item description or name"
                       />
                     </div>
 
@@ -682,7 +759,7 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
                       </div>
                     </div>
 
-                    {/* Splitnest Member Chips */}
+                    {/* Member Chips */}
                     <div className="flex flex-wrap gap-1.5">
                       {members.map((member) => {
                         const isSelected = item.assignedMembers.includes(member);
@@ -740,7 +817,7 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
                 type="text"
                 value={newItemName}
                 onChange={(e) => setNewItemName(e.target.value)}
-                placeholder="➕ Dish or item name (e.g. Garlic Bread)"
+                placeholder="➕ Item name or description (e.g. Supplies, Tickets, Gear)"
                 className="w-full min-w-0 bg-white border border-black/10 rounded-xl px-3 py-2 text-xs text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20 placeholder:text-[#1B1B19]/40"
               />
             </div>
@@ -770,24 +847,24 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
       </div>
 
       {/* ┌────────────────────────────────────────────────────────┐
-          │ ➕ Service Charge ($140) & PWD/VAT Discount (-$180)    │
-          │    🔘 Distribute proportionally to food total          │
+          │ ➕ Service Charge, Discounts & Taxes                   │
+          │    🔘 Distribute proportionally to items total         │
           │    ⚪ Split evenly across all participants              │
           └────────────────────────────────────────────────────────┘ */}
       <div className="bg-white/80 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-xs space-y-3.5">
         <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold flex justify-between items-center">
-          <span>Service Charge, Discounts & Taxes</span>
+          <span>Service Fees, Discounts & Taxes</span>
           <span className={`text-xs font-mono font-bold ${extraTotal >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>
             {extraTotal >= 0 ? `+${currency}${formatAmount(extraTotal)}` : `-${currency}${formatAmount(Math.abs(extraTotal))}`}
           </span>
         </div>
 
-        {/* Inputs with Philippine VAT guidance */}
+        {/* Inputs */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className="text-[10px] font-mono font-medium text-[#1B1B19]/70">
-                Service Charge (SC) / Tip
+                Service Fee / Tip
               </label>
               <span className="text-[9px] font-mono text-[#4A6CF7] font-semibold">Added</span>
             </div>
@@ -802,13 +879,13 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
                 className="w-full bg-transparent text-xs font-mono font-bold text-[#1B1B19] focus:outline-none"
               />
             </div>
-            <span className="text-[9px] text-[#1B1B19]/40 font-mono mt-0.5 block">e.g. 5%–10% restaurant SC</span>
+            <span className="text-[9px] text-[#1B1B19]/40 font-mono mt-0.5 block">e.g. Delivery / Service Fee</span>
           </div>
 
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className="text-[10px] font-mono font-medium text-[#1B1B19]/70">
-                PWD / SC / VAT Exemption (-)
+                Discounts / Promo (-)
               </label>
               <span className="text-[9px] font-mono text-rose-600 font-semibold">Deducted</span>
             </div>
@@ -823,7 +900,7 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
                 className="w-full bg-transparent text-xs font-mono font-bold text-rose-600 focus:outline-none"
               />
             </div>
-            <span className="text-[9px] text-[#1B1B19]/40 font-mono mt-0.5 block">PWD 20% + VAT Exemption</span>
+            <span className="text-[9px] text-[#1B1B19]/40 font-mono mt-0.5 block">Voucher / Coupon / Exemption</span>
           </div>
 
           <div>
@@ -844,16 +921,8 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
                 className="w-full bg-transparent text-xs font-mono font-bold text-[#1B1B19] focus:outline-none"
               />
             </div>
-            <span className="text-[9px] text-emerald-700/80 font-mono mt-0.5 block">🇵🇭 0.00 in PH (VAT in items)</span>
+            <span className="text-[9px] text-emerald-700/80 font-mono mt-0.5 block">0.00 if tax is included</span>
           </div>
-        </div>
-
-        {/* VAT Info Pill */}
-        <div className="px-3 py-2 bg-black/[0.02] border border-black/5 rounded-xl flex items-center gap-2 text-[10px] font-mono text-[#1B1B19]/60">
-          <span className="text-xs">💡</span>
-          <span>
-            <strong>PH Tax Note:</strong> 12% VAT is already incorporated into menu items and receipt line prices. Only Service Charge and PWD/SC + VAT Exemption discounts adjust the final bill.
-          </span>
         </div>
 
         {/* Distribution Strategy Radio Options */}
@@ -880,13 +949,13 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
               />
               <div className="space-y-0.5">
                 <p className="font-semibold text-xs text-[#1B1B19] flex items-center gap-1.5">
-                  <span>🔘 Distribute proportionally to food total</span>
+                  <span>🔘 Distribute proportionally to items total</span>
                   <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded-md font-mono font-bold">
                     Recommended
                   </span>
                 </p>
                 <p className="text-[10px] text-[#1B1B19]/60 leading-tight">
-                  Members who ordered more food pay a fair, proportional share of tax and tip.
+                  Members who have higher item amounts pay a fair, proportional share of fees and discounts.
                 </p>
               </div>
             </label>
@@ -909,7 +978,7 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
               <div className="space-y-0.5">
                 <p className="font-semibold text-xs text-[#1B1B19]">⚪ Split evenly across all participants</p>
                 <p className="text-[10px] text-[#1B1B19]/60 leading-tight">
-                  Divides total tax & tip into equal shares among all active participants.
+                  Divides total fees & discounts into equal shares among all active participants.
                 </p>
               </div>
             </label>
@@ -918,20 +987,15 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
       </div>
 
       {/* ┌────────────────────────────────────────────────────────┐
-          │ 📊 Final Calculation Breakdown:                        │
+          │ 📊 Payment Breakdown:                                  │
           │    • Kate owes: $15.42                                 │
           │    • Alex owes: $15.42                                 │
           │    • Sam owes:  $25.66                                 │
           └────────────────────────────────────────────────────────┘ */}
       <div className="bg-white/80 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-xs space-y-3">
-        <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold flex justify-between items-center">
-          <div className="flex items-center gap-1.5">
-            <Calculator className="w-3.5 h-3.5 text-[#4A6CF7]" />
-            <span>Final Calculation Breakdown</span>
-          </div>
-          <span className="text-[10px] font-mono text-[#1B1B19]/50">
-            Payer: <strong className="text-[#1B1B19]">{paidBy}</strong>
-          </span>
+        <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold flex items-center gap-1.5">
+          <Calculator className="w-3.5 h-3.5 text-[#4A6CF7]" />
+          <span>Payment Breakdown</span>
         </div>
 
         {/* Individual Breakdown List */}
@@ -947,7 +1011,7 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
                 className="bg-white border border-black/10 rounded-2xl p-3 flex items-center justify-between text-xs shadow-xs"
               >
                 <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-black/5 text-[#1B1B19] font-bold text-xs flex items-center justify-center uppercase">
+                  <div className="w-8 h-8 rounded-xl bg-black/5 text-[#1B1B19] font-bold text-xs flex items-center justify-center uppercase shrink-0">
                     {member.replace(/^@/, '').substring(0, 2)}
                   </div>
                   <div>
@@ -959,13 +1023,14 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
                         </span>
                       )}
                     </div>
-                    <p className="text-[10px] text-[#1B1B19]/60 font-mono">
-                      Food: {currency}{formatAmount(b?.foodShare || 0)} + Tax/Tip: {currency}{formatAmount(b?.extraShare || 0)}
-                    </p>
+                    <div className="text-[10px] text-[#1B1B19]/60 font-mono space-y-0.5 mt-0.5 leading-tight">
+                      <div>Items: {currency}{formatAmount(b?.itemShare || 0)}</div>
+                      <div>Fees / Tax: {currency}{formatAmount(b?.extraShare || 0)}</div>
+                    </div>
                   </div>
                 </div>
 
-                <div className="text-right">
+                <div className="text-right shrink-0 pl-2">
                   <span className="text-[10px] text-[#1B1B19]/50 font-mono block">owes</span>
                   <span className="text-sm font-extrabold font-mono text-emerald-700">
                     {currency}{formatAmount(owed)}
@@ -985,46 +1050,79 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
         </div>
       </div>
 
-      {/* ┌────────────────────────────────────────────────────────┐
-          │ [  ✓ Save & Record to Group Ledger  ]                  │
-          └────────────────────────────────────────────────────────┘ */}
-      <button 
-        type="button"
-        onClick={handleSave}
-        className="w-full bg-[#1B1B19] hover:bg-black text-white font-mono uppercase tracking-wider py-3.5 rounded-2xl font-bold text-xs transition shadow-md flex items-center justify-center gap-2 cursor-pointer hover:scale-[1.005]"
-      >
-        <Check className="w-4 h-4 text-emerald-400" />
-        <span>Save & Record to Group Ledger ({currency}{formatAmount(grandTotal)})</span>
-      </button>
+      {/* Only render inline bottom button when not in full-page modal mode */}
+      {!isOpenModal && (
+        <button 
+          type="button"
+          onClick={handleSave}
+          disabled={isSubmitting}
+          className="w-full bg-[#18181B] hover:bg-black active:scale-[0.99] text-white py-3.5 px-6 rounded-full font-semibold text-sm transition shadow-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {isSubmitting ? (
+            <>
+              <RefreshCw className="w-4 h-4 animate-spin text-white/80" />
+              <span>Submitting...</span>
+            </>
+          ) : (
+            <>
+              <Send className="w-4 h-4 text-white" />
+              <span>Submit Entry</span>
+            </>
+          )}
+        </button>
+      )}
     </div>
   );
 
-  // If used inside a modal
+  // If used inside full-page view
   if (isOpenModal) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/40 backdrop-blur-md animate-in fade-in duration-200">
-        <div className="bg-[#F8F7F4] border border-black/10 rounded-[32px] w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden text-[#1B1B19]">
-          <div className="px-5 py-4 border-b border-black/5 bg-[#F8F7F4] flex items-center justify-between sticky top-0 z-20">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-[#1B1B19] text-white flex items-center justify-center text-xs shadow-md">
-                <Receipt className="w-4 h-4 text-white" />
-              </div>
-              <div>
-                <h4 className="font-bold text-[#1B1B19] text-sm">Receipt Splitter</h4>
-                <p className="text-[10px] text-[#1B1B19]/60 font-mono">Itemized multi-person split</p>
-              </div>
+      <div className="fixed inset-0 z-50 bg-[#F8F7F4] flex flex-col animate-in fade-in duration-150 text-[#1B1B19]">
+        {/* Top Header with (X) button */}
+        <header className="px-5 py-4 border-b border-black/5 bg-[#F8F7F4]/95 backdrop-blur-md flex items-center justify-between sticky top-0 z-20 shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-[#1B1B19] text-white flex items-center justify-center text-xs shadow-md">
+              <Receipt className="w-4 h-4 text-white" />
             </div>
-            {onCloseModal && (
-              <button 
-                onClick={onCloseModal}
-                className="w-7 h-7 rounded-full bg-black/5 hover:bg-black/10 text-[#1B1B19]/60 hover:text-[#1B1B19] flex items-center justify-center transition cursor-pointer"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
+            <div>
+              <h4 className="font-bold text-[#1B1B19] text-sm">{isEditing ? 'Edit Receipt Split' : 'Receipt Splitter'}</h4>
+              <p className="text-[10px] text-[#1B1B19]/60 font-mono">Itemized multi-person split</p>
+            </div>
           </div>
-          <div className="p-5 overflow-y-auto flex-1 scrollbar-thin">
-            {content}
+          {onCloseModal && (
+            <button 
+              type="button"
+              onClick={onCloseModal}
+              className="w-8 h-8 rounded-full bg-black/5 hover:bg-black/10 text-[#1B1B19]/70 hover:text-[#1B1B19] flex items-center justify-center transition cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </header>
+
+        {/* Scrollable Content */}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-5 max-w-2xl mx-auto w-full">
+          {content}
+        </div>
+
+        {/* Fixed Footer at the bottom */}
+        <div className="sticky bottom-0 bg-[#F8F7F4]/95 backdrop-blur-md border-t border-black/10 p-3.5 sm:p-4 shrink-0 z-20">
+          <div className="max-w-2xl mx-auto grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={onCloseModal}
+              className="w-full bg-[#ECEBE7] hover:bg-[#E2E1DC] active:scale-[0.98] text-[#1B1B19] py-3.5 px-6 rounded-full font-semibold text-sm transition text-center cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={isSubmitting}
+              className="w-full bg-[#1B1B19] hover:bg-black active:scale-[0.98] text-white py-3.5 px-6 rounded-full font-semibold text-sm shadow-sm transition text-center cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isSubmitting ? 'Saving...' : (isEditing ? 'Save Changes' : (submitButtonLabel || `Save & Record (${currency}${formatAmount(grandTotal)})`))}
+            </button>
           </div>
         </div>
       </div>

@@ -26,6 +26,30 @@ export interface Expense {
   createdBy: string;
   category?: string;
   chatId?: string;
+  // Receipt Splitter Extended Metadata
+  isReceiptSplitter?: boolean;
+  merchant?: string;
+  itemsBreakdown?: Array<{
+    name: string;
+    price: number;
+    quantity: number;
+    assignedTo: string[];
+  }>;
+  tax?: number;
+  tip?: number;
+  discount?: number;
+}
+
+export interface MemberPaymentDetails {
+  member?: string;
+  memberName?: string;
+  bankName: string; // e.g. GCash, Maya, BPI, BDO, UnionBank, GoTyme, SeaBank, Cash, etc.
+  bankOrWallet?: string;
+  accountName: string;
+  accountNumber: string;
+  qrCodeUrl?: string; // Base64 data URL or Image URL
+  notes?: string;
+  updatedAt?: string;
 }
 
 export interface Settlement {
@@ -54,6 +78,24 @@ export interface ReceiptItem {
   assignedTo?: string[];
 }
 
+export interface PendingReceipt {
+  id: string;
+  timestamp: string;
+  merchant: string;
+  amount: number;
+  currency: string;
+  paidBy: string;
+  category?: string;
+  chatId?: string;
+  tax?: number;
+  tip?: number;
+  discount?: number;
+  items: ReceiptItem[];
+  uploaderName?: string;
+  status: 'pending' | 'submitted' | 'discarded';
+  rawSummary?: string;
+}
+
 export interface ParsedReceiptData {
   merchant: string;
   total: number;
@@ -66,6 +108,7 @@ export interface ParsedReceiptData {
   items: ReceiptItem[];
   summary?: string;
   imageUrl?: string;
+  pendingId?: string;
 }
 
 export interface GroupChatMessage {
