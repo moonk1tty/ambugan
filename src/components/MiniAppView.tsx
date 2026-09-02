@@ -9,7 +9,6 @@ import {
   AlertCircle,
   Sliders,
   Send,
-  Settings,
   RefreshCw,
   Users,
   UserMinus,
@@ -37,7 +36,6 @@ import {
 import { Expense, Settlement, RegisteredUser, formatAmount, ReceiptItem, ParsedReceiptData, MemberPaymentDetails } from '../types';
 import { ReceiptScannerModal } from './ReceiptScannerModal';
 import { ItemizedReceiptSplitter } from './ItemizedReceiptSplitter';
-import { ENVIRONMENTS, getStoredEnvironment, saveStoredEnvironment, AppEnvironment } from '../config/environments';
 
 interface MiniAppViewProps {
   expenses: Expense[];
@@ -111,19 +109,6 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [showItemizedSplitter, setShowItemizedSplitter] = useState(false);
   const [itemizedInitialData, setItemizedInitialData] = useState<ParsedReceiptData | null>(null);
   const [scannedItemsPreview, setScannedItemsPreview] = useState<ReceiptItem[]>([]);
-
-  // Active Environment (main / test)
-  const [activeEnv, setActiveEnv] = useState<AppEnvironment>(() => getStoredEnvironment());
-
-  const handleSwitchEnvironment = (env: AppEnvironment) => {
-    setActiveEnv(env);
-    saveStoredEnvironment(env);
-    const cfg = ENVIRONMENTS[env];
-    if (cfg.defaultGasUrl) {
-      setInputGasUrl(cfg.defaultGasUrl);
-      setGasUrl(cfg.defaultGasUrl);
-    }
-  };
 
   const handleApplyScannedReceipt = (data: {
     description: string;
@@ -291,11 +276,6 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [settlementFilterReceiver, setSettlementFilterReceiver] = useState<string>('all');
   const [settlementSearch, setSettlementSearch] = useState<string>('');
 
-  const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [inputGasUrl, setInputGasUrl] = useState(gasUrl);
-  const [isTestingUrl, setIsTestingUrl] = useState(false);
-  const [testResult, setTestResult] = useState<{ status: 'success' | 'error'; message: string } | null>(null);
-
   // Global Action Processing Loader State
   const [actionLoading, setActionLoading] = useState<{
     active: boolean;
@@ -372,10 +352,6 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       setActionLoading({ active: false, success: false, title: '', subtitle: '' });
     }
   };
-
-  useEffect(() => {
-    setInputGasUrl(gasUrl);
-  }, [gasUrl]);
 
   // Sync paidBy with activeUser when activeUser changes
   useEffect(() => {
@@ -1314,28 +1290,13 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
           )}
         </div>
 
-        <div className="flex items-center space-x-1.5">
-          {/* Environment Indicator Pill */}
-          <button
-            type="button"
-            onClick={() => setShowSettingsModal(true)}
-            title={`Environment: ${ENVIRONMENTS[activeEnv].name}. Tap to switch or view credentials.`}
-            className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-full border transition cursor-pointer flex items-center space-x-1 ${
-              activeEnv === 'main'
-                ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
-                : 'bg-purple-50 text-purple-800 border-purple-200 hover:bg-purple-100'
-            }`}
-          >
-            <span className={`w-1.5 h-1.5 rounded-full ${activeEnv === 'main' ? 'bg-emerald-500' : 'bg-purple-500'}`}></span>
-            <span>{ENVIRONMENTS[activeEnv].badge}</span>
-          </button>
-
+        <div className="flex items-center space-x-2">
           {availableUsers.length > 1 ? (
             <button
               type="button"
               onClick={() => setShowMembersModal(true)}
               title={`View & manage ${availableUsers.length} group members`}
-              className="text-[10px] font-mono font-medium px-2 py-1 bg-black/5 hover:bg-black/10 rounded-full text-[#1B1B19]/70 hover:text-[#1B1B19] flex items-center space-x-1 border border-black/5 transition cursor-pointer"
+              className="text-[10px] font-mono font-medium px-2.5 py-1 bg-black/5 hover:bg-black/10 rounded-full text-[#1B1B19]/70 hover:text-[#1B1B19] flex items-center space-x-1 border border-black/5 transition cursor-pointer"
             >
               <Users className="w-3 h-3 text-[#1B1B19]/60" />
               <span>{availableUsers.length}</span>
@@ -1352,14 +1313,19 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             </button>
           )}
 
-          <button 
-            type="button"
-            onClick={() => setShowSettingsModal(true)}
-            title={isOnlineGas ? 'Synced with cloud • Tap for settings' : 'Connecting... • Tap for settings'}
-            className="p-1.5 bg-black/5 hover:bg-black/10 rounded-full text-[#1B1B19]/70 flex items-center justify-center border border-black/5 transition cursor-pointer"
+          {/* Clean Status Dot Indicator */}
+          <div
+            title={isOnlineGas ? 'Connected & Synced with Google Sheets' : 'Connecting to Google Sheets...'}
+            className="flex items-center justify-center p-1 cursor-default"
           >
-            <Settings className="w-3 h-3 text-[#1B1B19]/60" />
-          </button>
+            <span
+              className={`w-2.5 h-2.5 rounded-full transition-all duration-300 ${
+                isOnlineGas
+                  ? 'bg-emerald-500 ring-4 ring-emerald-500/20'
+                  : 'bg-amber-400 animate-pulse ring-4 ring-amber-400/20'
+              }`}
+            />
+          </div>
         </div>
       </header>
 
@@ -2921,228 +2887,6 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
               </div>
             </div>
           </form>
-        </div>
-      )}
-
-      {/* Google Apps Script & Sync Settings Modal */}
-      {showSettingsModal && (
-        <div className="absolute inset-0 bg-black/40 backdrop-blur-md z-50 p-4 flex items-center justify-center">
-          <div className="bg-[#F8F7F4] border border-black/10 rounded-[32px] p-5 w-full max-w-sm space-y-3.5 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-black/5 pb-2.5">
-              <div className="flex items-center space-x-2">
-                <div className="w-7 h-7 rounded-lg bg-[#4A6CF7]/10 text-[#4A6CF7] flex items-center justify-center text-sm font-bold">
-                  ⚙️
-                </div>
-                <div>
-                  <h4 className="font-bold text-[#1B1B19] text-sm leading-tight">Google Sheets Sync</h4>
-                  <p className="text-[10px] text-[#1B1B19]/60 font-mono">Backend Connection Status</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowSettingsModal(false);
-                  setTestResult(null);
-                }}
-                className="text-xs text-[#1B1B19]/50 hover:text-[#1B1B19] font-mono px-2 py-1"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Environment Profile Selector */}
-            <div className="space-y-1.5">
-              <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 flex items-center justify-between">
-                <span>Active Environment Profile</span>
-                <span className={`px-1.5 py-0.2 rounded font-bold text-[9px] ${
-                  activeEnv === 'main' ? 'bg-emerald-100 text-emerald-800' : 'bg-purple-100 text-purple-800'
-                }`}>
-                  {ENVIRONMENTS[activeEnv].badge}
-                </span>
-              </label>
-              <div className="grid grid-cols-2 gap-1.5 bg-black/5 p-1 rounded-xl">
-                <button
-                  type="button"
-                  onClick={() => handleSwitchEnvironment('main')}
-                  className={`py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center space-x-1 transition ${
-                    activeEnv === 'main'
-                      ? 'bg-white text-emerald-700 shadow-xs border border-emerald-200'
-                      : 'text-[#1B1B19]/60 hover:text-[#1B1B19]'
-                  }`}
-                >
-                  <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                  <span>📁 Main (Prod)</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleSwitchEnvironment('test')}
-                  className={`py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center space-x-1 transition ${
-                    activeEnv === 'test'
-                      ? 'bg-white text-purple-700 shadow-xs border border-purple-200'
-                      : 'text-[#1B1B19]/60 hover:text-[#1B1B19]'
-                  }`}
-                >
-                  <span className="w-2 h-2 rounded-full bg-purple-500"></span>
-                  <span>📁 Test Bot</span>
-                </button>
-              </div>
-              <div className="bg-white/80 p-2.5 rounded-xl border border-black/5 font-mono text-[10px] text-[#1B1B19]/80 space-y-0.5">
-                <div className="flex justify-between">
-                  <span className="text-[#1B1B19]/50">Bot:</span>
-                  <span className="font-semibold text-sky-600">@{ENVIRONMENTS[activeEnv].botUsername}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#1B1B19]/50">Sheet ID:</span>
-                  <span className="font-semibold truncate max-w-[170px]">{ENVIRONMENTS[activeEnv].spreadsheetId}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#1B1B19]/50">Mini App:</span>
-                  <span className="font-semibold text-[#4A6CF7]">{ENVIRONMENTS[activeEnv].miniAppShortName}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Status indicator pill */}
-            <div className={`p-3 rounded-2xl border text-xs font-mono flex items-start space-x-2.5 ${
-              isOnlineGas 
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-900' 
-                : 'bg-amber-50 border-amber-200 text-amber-900'
-            }`}>
-              <span className={`w-2.5 h-2.5 rounded-full mt-0.5 shrink-0 ${isOnlineGas ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`}></span>
-              <div className="space-y-0.5">
-                <p className="font-bold">{isOnlineGas ? '🟢 Live Sheet Connected' : '🟡 Sync Pending / Blocked'}</p>
-                <p className="text-[10px] leading-tight opacity-80">
-                  {isOnlineGas 
-                    ? `Syncing live with ${ENVIRONMENTS[activeEnv].name} database.` 
-                    : 'Google returned a login redirect. Verify "Execute as: Me" and "Who has access: Anyone".'}
-                </p>
-              </div>
-            </div>
-
-            {/* Web App URL field */}
-            <div className="space-y-1">
-              <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60">
-                Apps Script Web App URL
-              </label>
-              <input
-                type="url"
-                value={inputGasUrl}
-                onChange={e => setInputGasUrl(e.target.value)}
-                placeholder="https://script.google.com/macros/s/.../exec"
-                className="w-full bg-white border border-black/10 px-3 py-2 rounded-xl text-xs font-mono text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20"
-              />
-            </div>
-
-            {/* Test result message if any */}
-            {testResult && (
-              <div className={`p-2.5 rounded-xl text-xs font-mono leading-tight ${
-                testResult.status === 'success' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
-              }`}>
-                {testResult.message}
-              </div>
-            )}
-
-            {/* Deployment Instructions Checklist */}
-            <div className="bg-white/60 p-3 rounded-2xl border border-black/5 text-[11px] space-y-1.5 text-[#1B1B19]/80">
-              <p className="font-bold font-mono text-[10px] uppercase text-[#1B1B19]">Troubleshooting Checklist:</p>
-              <p className="leading-snug">• <strong>Deploy New Version</strong>: In Apps Script, click <code>Deploy &gt; Manage deployments &gt; Edit (pencil) &gt; Version: New version &gt; Deploy</code>.</p>
-              <p className="leading-snug">• <strong>Bot Privacy (@BotFather)</strong>: To receive <code>/start</code> in groups, send <code>/setprivacy</code> to @BotFather and choose <code>Disable</code>, or promote the bot to Admin.</p>
-              <p className="leading-snug">• <strong>Execute as</strong>: <code>Me</code> | <strong>Who has access</strong>: <code>Anyone</code>.</p>
-            </div>
-
-            {/* Sync Webhook Button */}
-            <button
-              type="button"
-              disabled={isTestingUrl}
-              onClick={async () => {
-                setIsTestingUrl(true);
-                setTestResult(null);
-                try {
-                  const cleanUrl = inputGasUrl.trim();
-                  if (!cleanUrl.startsWith('http')) {
-                    setTestResult({ status: 'error', message: 'Enter a valid Apps Script Web App URL first.' });
-                    setIsTestingUrl(false);
-                    return;
-                  }
-                  const res = await fetch(`${cleanUrl}${cleanUrl.includes('?') ? '&' : '?'}action=set_webhook`);
-                  const json = await res.json();
-                  if (json.result && json.result.ok) {
-                    setTestResult({ status: 'success', message: '✅ Webhook successfully connected to Telegram! Bot will now respond to commands.' });
-                  } else {
-                    setTestResult({ status: 'error', message: `Webhook registration response: ${JSON.stringify(json.result || json)}` });
-                  }
-                } catch (err: any) {
-                  setTestResult({ status: 'error', message: `Webhook registration failed: ${err.message}` });
-                } finally {
-                  setIsTestingUrl(false);
-                }
-              }}
-              className="w-full bg-[#1B1B19] hover:bg-black text-white py-2 rounded-xl font-semibold text-xs transition flex items-center justify-center space-x-1.5"
-            >
-              <Send className="w-3 h-3" />
-              <span>Register / Refresh Telegram Webhook</span>
-            </button>
-
-            <div className="grid grid-cols-2 gap-2 pt-1">
-              <button
-                type="button"
-                disabled={isTestingUrl}
-                onClick={async () => {
-                  setIsTestingUrl(true);
-                  setTestResult(null);
-                  try {
-                    const cleanUrl = inputGasUrl.trim();
-                    if (!cleanUrl.startsWith('http')) {
-                      setTestResult({ status: 'error', message: 'URL must start with https://' });
-                      setIsTestingUrl(false);
-                      return;
-                    }
-                    const res = await fetch(`${cleanUrl}${cleanUrl.includes('?') ? '&' : '?'}action=get_data`);
-                    const text = await res.text();
-                    if (text.includes('accounts.google.com') || text.startsWith('<')) {
-                      setTestResult({
-                        status: 'error',
-                        message: 'Google Sign-In blocked this URL. In Apps Script, set "Execute as: Me" and "Who has access: Anyone".'
-                      });
-                    } else {
-                      const json = JSON.parse(text);
-                      if (json.status === 'success') {
-                        setGasUrl(cleanUrl);
-                        setTestResult({
-                          status: 'success',
-                          message: `Connected! Found ${(json.data?.users || []).length} users and ${(json.data?.expenses || []).length} expenses.`
-                        });
-                        setTimeout(() => {
-                          setShowSettingsModal(false);
-                          window.location.reload();
-                        }, 1200);
-                      } else {
-                        setTestResult({ status: 'error', message: json.message || 'Error fetching data' });
-                      }
-                    }
-                  } catch (err: any) {
-                    setTestResult({ status: 'error', message: `Fetch failed: ${err.message}` });
-                  } finally {
-                    setIsTestingUrl(false);
-                  }
-                }}
-                className="w-full bg-[#4A6CF7] hover:bg-[#3B5BE3] text-white py-2.5 rounded-xl font-semibold text-xs transition shadow-sm flex items-center justify-center space-x-1.5"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isTestingUrl ? 'animate-spin' : ''}`} />
-                <span>{isTestingUrl ? 'Testing...' : 'Save & Test'}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowSettingsModal(false);
-                  setTestResult(null);
-                }}
-                className="w-full bg-black/5 hover:bg-black/10 text-[#1B1B19] py-2.5 rounded-xl font-semibold text-xs transition"
-              >
-                Close
-              </button>
-            </div>
-          </div>
         </div>
       )}
 

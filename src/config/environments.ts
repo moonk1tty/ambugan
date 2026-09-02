@@ -53,12 +53,13 @@ export function getStoredEnvironment(): AppEnvironment {
   if (typeof window !== 'undefined') {
     const searchParams = new URLSearchParams(window.location.search);
     const envParam = searchParams.get('env') || searchParams.get('environment');
-    if (envParam === 'test' || envParam === 'staging') return 'test';
     if (envParam === 'main' || envParam === 'prod') return 'main';
+    if (envParam === 'test' || envParam === 'staging') return 'test';
 
     // 2. Check if running inside Telegram WebApp with test bot username in initData
     const tg = (window as any).Telegram?.WebApp;
     if (tg?.initDataUnsafe?.bot_username) {
+      if (tg.initDataUnsafe.bot_username.toLowerCase().includes('splitnest_bot')) return 'main';
       if (tg.initDataUnsafe.bot_username.toLowerCase().includes('test')) return 'test';
     }
 
@@ -68,7 +69,7 @@ export function getStoredEnvironment(): AppEnvironment {
       if (saved === 'test' || saved === 'main') return saved;
     } catch (e) {}
   }
-  return 'main';
+  return 'test';
 }
 
 export function saveStoredEnvironment(env: AppEnvironment): void {

@@ -123,7 +123,7 @@ function getGroupTitle(cId: string): string {
   return '';
 }
 
-const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbyzs2hkta9HPE7MDkHgXw6Fk56r9WBaSb_7M9Y3H_cIUfZsDdJJsIpF8dEqTvC4bU5J/exec';
+const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbxWrWkiLh-zOHuMfoXhx2bKhuNbuCCZCsxfjKGoZae4D0iYtkTlHjQr7zBXu7RkymEJaA/exec';
 
 export default function App() {
   const [chatId, setChatId] = useState<string>(() => getChatId());
