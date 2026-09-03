@@ -636,12 +636,31 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       const paidCentsMap: Record<string, number> = {};
       const shareCentsMap: Record<string, number> = {};
       const userNetCents: Record<string, number> = {};
+      // Pairwise debt matrix: pairwiseOwedCents[Debtor][Creditor] in integer cents
+      const pairwiseOwedCents: Record<string, Record<string, number>> = {};
 
       availableUsers.forEach(u => {
         paidCentsMap[u] = 0;
         shareCentsMap[u] = 0;
         userNetCents[u] = 0;
+        pairwiseOwedCents[u] = {};
+        availableUsers.forEach(v => {
+          pairwiseOwedCents[u][v] = 0;
+        });
       });
+
+      const ensureUserInMatrix = (name: string) => {
+        if (!pairwiseOwedCents[name]) {
+          pairwiseOwedCents[name] = {};
+          paidCentsMap[name] = 0;
+          shareCentsMap[name] = 0;
+          userNetCents[name] = 0;
+        }
+        availableUsers.forEach(v => {
+          if (pairwiseOwedCents[name][v] === undefined) pairwiseOwedCents[name][v] = 0;
+          if (pairwiseOwedCents[v] && pairwiseOwedCents[v][name] === undefined) pairwiseOwedCents[v][name] = 0;
+        });
+      };
 
       const currExpenses = expenses.filter(e => (e.currency || '₱') === curr);
       const currSettlements = settlements.filter(s => (s.currency || '₱') === curr);
@@ -651,15 +670,12 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         if (totalCents <= 0) return;
 
         const payer = normalizeMemberName(e.paidBy);
-        if (userNetCents[payer] === undefined) {
-          paidCentsMap[payer] = 0;
-          shareCentsMap[payer] = 0;
-          userNetCents[payer] = 0;
-        }
+        ensureUserInMatrix(payer);
         paidCentsMap[payer] += totalCents;
         userNetCents[payer] += totalCents;
 
         const splitMode = e.splitMode || 'Equal';
+        const itemMemberSharesInCents: Record<string, number> = {};
 
         if (splitMode === 'Equal' || splitMode === '50/50 Equal') {
           const rawParticipants = (e.splitMembers && Array.isArray(e.splitMembers) && e.splitMembers.length > 0)
@@ -672,17 +688,10 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
           participants.forEach((u, idx) => {
             const share = baseCents + (idx < remCents ? 1 : 0);
-            if (userNetCents[u] === undefined) {
-              paidCentsMap[u] = 0;
-              shareCentsMap[u] = 0;
-              userNetCents[u] = 0;
-            }
-            shareCentsMap[u] += share;
-            userNetCents[u] -= share;
+            itemMemberSharesInCents[u] = (itemMemberSharesInCents[u] || 0) + share;
           });
         } else if (splitMode === 'Exact Amounts') {
           if (e.shares && Object.keys(e.shares).length > 0) {
-            const userSharesInCents: Record<string, number> = {};
             let allocatedCents = 0;
             let highestUser = '';
             let highestAmt = -1;
@@ -690,7 +699,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             Object.entries(e.shares).forEach(([rawUser, shareVal]) => {
               const u = normalizeMemberName(rawUser);
               const c = Math.round((Number(shareVal) || 0) * 100);
-              userSharesInCents[u] = (userSharesInCents[u] || 0) + c;
+              itemMemberSharesInCents[u] = (itemMemberSharesInCents[u] || 0) + c;
               allocatedCents += c;
               if (c > highestAmt) {
                 highestAmt = c;
@@ -701,18 +710,8 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             // Rebalance any rounding discrepancy to highest user
             const diff = totalCents - allocatedCents;
             if (diff !== 0 && highestUser) {
-              userSharesInCents[highestUser] += diff;
+              itemMemberSharesInCents[highestUser] = (itemMemberSharesInCents[highestUser] || 0) + diff;
             }
-
-            Object.entries(userSharesInCents).forEach(([u, share]) => {
-              if (userNetCents[u] === undefined) {
-                paidCentsMap[u] = 0;
-                shareCentsMap[u] = 0;
-                userNetCents[u] = 0;
-              }
-              shareCentsMap[u] += share;
-              userNetCents[u] -= share;
-            });
           } else {
             const userA = payer;
             const otherCandidate = e.createdBy && normalizeMemberName(e.createdBy) !== payer
@@ -725,19 +724,11 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
               : Math.floor(totalCents / 2);
             const shareBCents = totalCents - shareACents;
 
-            [ { u: userA, s: shareACents }, { u: userB, s: shareBCents } ].forEach(({ u, s }) => {
-              if (userNetCents[u] === undefined) {
-                paidCentsMap[u] = 0;
-                shareCentsMap[u] = 0;
-                userNetCents[u] = 0;
-              }
-              shareCentsMap[u] += s;
-              userNetCents[u] -= s;
-            });
+            itemMemberSharesInCents[userA] = (itemMemberSharesInCents[userA] || 0) + shareACents;
+            itemMemberSharesInCents[userB] = (itemMemberSharesInCents[userB] || 0) + shareBCents;
           }
         } else if (splitMode === 'Percentages') {
           if (e.percentages && Object.keys(e.percentages).length > 0) {
-            const userPctCents: Record<string, number> = {};
             let allocatedCents = 0;
             let highestUser = '';
             let highestPct = -1;
@@ -746,7 +737,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
               const u = normalizeMemberName(rawUser);
               const pct = Number(pctVal) || 0;
               const c = Math.round(totalCents * (pct / 100));
-              userPctCents[u] = (userPctCents[u] || 0) + c;
+              itemMemberSharesInCents[u] = (itemMemberSharesInCents[u] || 0) + c;
               allocatedCents += c;
               if (pct > highestPct) {
                 highestPct = pct;
@@ -756,18 +747,8 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
             const diff = totalCents - allocatedCents;
             if (diff !== 0 && highestUser) {
-              userPctCents[highestUser] += diff;
+              itemMemberSharesInCents[highestUser] = (itemMemberSharesInCents[highestUser] || 0) + diff;
             }
-
-            Object.entries(userPctCents).forEach(([u, share]) => {
-              if (userNetCents[u] === undefined) {
-                paidCentsMap[u] = 0;
-                shareCentsMap[u] = 0;
-                userNetCents[u] = 0;
-              }
-              shareCentsMap[u] += share;
-              userNetCents[u] -= share;
-            });
           } else {
             const userA = payer;
             const otherCandidate = e.createdBy && normalizeMemberName(e.createdBy) !== payer
@@ -779,27 +760,27 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             const shareACents = Math.round(totalCents * pA);
             const shareBCents = totalCents - shareACents;
 
-            [ { u: userA, s: shareACents }, { u: userB, s: shareBCents } ].forEach(({ u, s }) => {
-              if (userNetCents[u] === undefined) {
-                paidCentsMap[u] = 0;
-                shareCentsMap[u] = 0;
-                userNetCents[u] = 0;
-              }
-              shareCentsMap[u] += s;
-              userNetCents[u] -= s;
-            });
+            itemMemberSharesInCents[userA] = (itemMemberSharesInCents[userA] || 0) + shareACents;
+            itemMemberSharesInCents[userB] = (itemMemberSharesInCents[userB] || 0) + shareBCents;
           }
         } else if (splitMode === 'Single Payer (100% owed)') {
           const targetOwer = e.singleOwer || (availableUsers.find(u => u !== payer) || availableUsers[0]);
           const debtor = normalizeMemberName(targetOwer);
-          if (userNetCents[debtor] === undefined) {
-            paidCentsMap[debtor] = 0;
-            shareCentsMap[debtor] = 0;
-            userNetCents[debtor] = 0;
-          }
-          shareCentsMap[debtor] += totalCents;
-          userNetCents[debtor] -= totalCents;
+          itemMemberSharesInCents[debtor] = (itemMemberSharesInCents[debtor] || 0) + totalCents;
         }
+
+        // Apply shares to Net totals and to Direct Pairwise Debts
+        Object.entries(itemMemberSharesInCents).forEach(([debtor, share]) => {
+          ensureUserInMatrix(debtor);
+          shareCentsMap[debtor] = (shareCentsMap[debtor] || 0) + share;
+          userNetCents[debtor] = (userNetCents[debtor] || 0) - share;
+
+          // If debtor is not the payer, debtor owes payer directly
+          if (debtor !== payer && share > 0) {
+            if (!pairwiseOwedCents[debtor]) pairwiseOwedCents[debtor] = {};
+            pairwiseOwedCents[debtor][payer] = (pairwiseOwedCents[debtor][payer] || 0) + share;
+          }
+        });
       });
 
       currSettlements.forEach(s => {
@@ -808,23 +789,26 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         const payer = normalizeMemberName(s.payer);
         const receiver = normalizeMemberName(s.receiver);
 
-        if (userNetCents[payer] === undefined) {
-          paidCentsMap[payer] = 0;
-          shareCentsMap[payer] = 0;
-          userNetCents[payer] = 0;
-        }
-        if (userNetCents[receiver] === undefined) {
-          paidCentsMap[receiver] = 0;
-          shareCentsMap[receiver] = 0;
-          userNetCents[receiver] = 0;
-        }
+        ensureUserInMatrix(payer);
+        ensureUserInMatrix(receiver);
 
         userNetCents[payer] += settleCents;
         userNetCents[receiver] -= settleCents;
+
+        // Payer paid receiver, so reduce what payer owes receiver
+        if (payer !== receiver) {
+          if (!pairwiseOwedCents[payer]) pairwiseOwedCents[payer] = {};
+          pairwiseOwedCents[payer][receiver] = (pairwiseOwedCents[payer][receiver] || 0) - settleCents;
+        }
       });
 
-      // Compute Member Summaries
-      const summaries = Object.keys(userNetCents).map(name => {
+      // Compute Overall Member Summaries (Paid, Consumed/Share, Net Position)
+      const allMembersInCurrency = Array.from(new Set([
+        ...availableUsers,
+        ...Object.keys(userNetCents)
+      ]));
+
+      const summaries = allMembersInCurrency.map(name => {
         const net = (userNetCents[name] || 0) / 100;
         const paid = (paidCentsMap[name] || 0) / 100;
         const share = (shareCentsMap[name] || 0) / 100;
@@ -839,46 +823,42 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       summaries.sort((a, b) => b.net - a.net);
       memberSummariesByCurrency[curr] = summaries;
 
-      // Min-cash-flow greedy debtor/creditor matching in integer cents
-      const debtors: Array<{ name: string; cents: number }> = [];
-      const creditors: Array<{ name: string; cents: number }> = [];
+      // Calculate Exact Bilateral Net Transfers (Direct Pairwise Settlements)
+      const pairProcessed = new Set<string>();
+      for (let i = 0; i < allMembersInCurrency.length; i++) {
+        for (let j = i + 1; j < allMembersInCurrency.length; j++) {
+          const userA = allMembersInCurrency[i];
+          const userB = allMembersInCurrency[j];
+          const pairKey = [userA, userB].sort().join(':::');
+          if (pairProcessed.has(pairKey)) continue;
+          pairProcessed.add(pairKey);
 
-      Object.entries(userNetCents).forEach(([name, netCents]) => {
-        if (netCents > 0) {
-          creditors.push({ name, cents: netCents });
-        } else if (netCents < 0) {
-          debtors.push({ name, cents: Math.abs(netCents) });
+          const owedAB = pairwiseOwedCents[userA]?.[userB] || 0; // A owes B
+          const owedBA = pairwiseOwedCents[userB]?.[userA] || 0; // B owes A
+          const netCents = owedAB - owedBA;
+
+          if (netCents > 0) {
+            results.push({
+              currency: curr,
+              debtor: userA,
+              creditor: userB,
+              amount: netCents / 100,
+              summaryText: `${userA} owes ${userB}`
+            });
+          } else if (netCents < 0) {
+            results.push({
+              currency: curr,
+              debtor: userB,
+              creditor: userA,
+              amount: Math.abs(netCents) / 100,
+              summaryText: `${userB} owes ${userA}`
+            });
+          }
         }
-      });
-
-      debtors.sort((a, b) => b.cents - a.cents);
-      creditors.sort((a, b) => b.cents - a.cents);
-
-      let dIdx = 0;
-      let cIdx = 0;
-
-      while (dIdx < debtors.length && cIdx < creditors.length) {
-        const deb = debtors[dIdx];
-        const cred = creditors[cIdx];
-        const settleCents = Math.min(deb.cents, cred.cents);
-
-        if (settleCents > 0) {
-          const amountVal = settleCents / 100;
-          results.push({
-            currency: curr,
-            debtor: deb.name,
-            creditor: cred.name,
-            amount: amountVal,
-            summaryText: `${deb.name} owes ${cred.name}`
-          });
-          deb.cents -= settleCents;
-          cred.cents -= settleCents;
-        }
-
-        if (deb.cents === 0) dIdx++;
-        if (cred.cents === 0) cIdx++;
       }
     });
+
+    results.sort((a, b) => b.amount - a.amount);
 
     return {
       settlementTransfers: results,
