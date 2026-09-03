@@ -305,11 +305,18 @@ export default function App() {
             localStorage.setItem(`splitsquad_group_title_${currentChatId}`, title);
           }
         }
+        const normalizeChatId = (id?: string | number) => String(id || '').trim().replace(/^-100/, '-');
+        const isMatchingChatId = (a?: string | number, b?: string | number) => {
+          if (!b) return true;
+          if (!a) return false;
+          return normalizeChatId(a) === normalizeChatId(b);
+        };
+
         const fetchedExpenses = Array.isArray(result.data.expenses) 
-          ? result.data.expenses.filter((e: Expense) => !currentChatId || !e.chatId || e.chatId === currentChatId)
+          ? result.data.expenses.filter((e: Expense) => !currentChatId || isMatchingChatId(e.chatId, currentChatId))
           : [];
         const fetchedSettlements = Array.isArray(result.data.settlements) 
-          ? result.data.settlements.filter((s: Settlement) => !currentChatId || !s.chatId || s.chatId === currentChatId)
+          ? result.data.settlements.filter((s: Settlement) => !currentChatId || isMatchingChatId(s.chatId, currentChatId))
           : [];
         const fetchedUsers: RegisteredUser[] = Array.isArray(result.data.users) ? [...result.data.users] : [];
 
