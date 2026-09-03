@@ -305,8 +305,12 @@ export default function App() {
             localStorage.setItem(`splitsquad_group_title_${currentChatId}`, title);
           }
         }
-        const fetchedExpenses = Array.isArray(result.data.expenses) ? result.data.expenses : [];
-        const fetchedSettlements = Array.isArray(result.data.settlements) ? result.data.settlements : [];
+        const fetchedExpenses = Array.isArray(result.data.expenses) 
+          ? result.data.expenses.filter((e: Expense) => !currentChatId || !e.chatId || e.chatId === currentChatId)
+          : [];
+        const fetchedSettlements = Array.isArray(result.data.settlements) 
+          ? result.data.settlements.filter((s: Settlement) => !currentChatId || !s.chatId || s.chatId === currentChatId)
+          : [];
         const fetchedUsers: RegisteredUser[] = Array.isArray(result.data.users) ? [...result.data.users] : [];
 
         // Also harvest any distinct names from expenses & settlements to ensure no member is missed
@@ -658,23 +662,27 @@ export default function App() {
   };
 
   const handleSettleUp = async (settlement: Omit<Settlement, 'id' | 'timestamp'>) => {
+    const currentChatId = settlement.chatId || chatId || getChatId();
     const created: Settlement = {
       ...settlement,
       id: 'SET-' + Date.now(),
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      chatId: currentChatId
     };
 
     // Optimistic local state and localStorage update
     const updatedSettlements = [created, ...settlements];
     setSettlements(updatedSettlements);
     try {
-      localStorage.setItem(`splitnest_settlements_${chatId || 'default'}`, JSON.stringify(updatedSettlements));
+      localStorage.setItem(`splitnest_settlements_${currentChatId || 'default'}`, JSON.stringify(updatedSettlements));
+      if (currentChatId) {
+        localStorage.setItem(`${STORAGE_KEYS.SETTLEMENTS}_${currentChatId}`, JSON.stringify(updatedSettlements));
+      }
     } catch (e) {}
 
     // Send to GAS backend if URL is configured
     if (gasUrl && gasUrl.startsWith('http')) {
       try {
-        const currentChatId = chatId || getChatId();
         const tg = (window as any).Telegram?.WebApp;
         const tgUser = tg?.initDataUnsafe?.user;
 
@@ -692,21 +700,36 @@ export default function App() {
         if (result.status === 'success' && result.data) {
           setIsOnlineGas(true);
           if (Array.isArray(result.data.settlements)) {
-            setSettlements(result.data.settlements);
+            const filtered = currentChatId
+              ? result.data.settlements.filter((s: Settlement) => !s.chatId || s.chatId === currentChatId)
+              : result.data.settlements;
+            setSettlements(filtered);
             try {
-              localStorage.setItem(`splitnest_settlements_${currentChatId || 'default'}`, JSON.stringify(result.data.settlements));
+              localStorage.setItem(`splitnest_settlements_${currentChatId || 'default'}`, JSON.stringify(filtered));
+              if (currentChatId) {
+                localStorage.setItem(`${STORAGE_KEYS.SETTLEMENTS}_${currentChatId}`, JSON.stringify(filtered));
+              }
             } catch (e) {}
           }
           if (Array.isArray(result.data.expenses)) {
-            setExpenses(result.data.expenses);
+            const filteredExp = currentChatId
+              ? result.data.expenses.filter((e: Expense) => !e.chatId || e.chatId === currentChatId)
+              : result.data.expenses;
+            setExpenses(filteredExp);
             try {
-              localStorage.setItem(`splitnest_expenses_${currentChatId || 'default'}`, JSON.stringify(result.data.expenses));
+              localStorage.setItem(`splitnest_expenses_${currentChatId || 'default'}`, JSON.stringify(filteredExp));
+              if (currentChatId) {
+                localStorage.setItem(`${STORAGE_KEYS.EXPENSES}_${currentChatId}`, JSON.stringify(filteredExp));
+              }
             } catch (e) {}
           }
           if (Array.isArray(result.data.users)) {
             setRegisteredUsers(result.data.users);
             try {
               localStorage.setItem(`splitnest_users_${currentChatId || 'default'}`, JSON.stringify(result.data.users));
+              if (currentChatId) {
+                localStorage.setItem(`${STORAGE_KEYS.REGISTERED_USERS}_${currentChatId}`, JSON.stringify(result.data.users));
+              }
             } catch (e) {}
           }
         }
