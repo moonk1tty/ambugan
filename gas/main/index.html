@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>splitnest — Production Mini App</title>
+  <!-- Telegram WebApp SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    :root {
+      --tg-theme-bg-color: #F8F7F4;
+      --tg-theme-text-color: #1B1B19;
+      --primary: #4A6CF7;
+    }
+    body {
+      background-color: var(--tg-theme-bg-color, #F8F7F4);
+      color: var(--tg-theme-text-color, #1B1B19);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      touch-action: manipulation;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-start p-4">
+  <!-- Top Bar -->
+  <header class="w-full max-w-md flex items-center justify-between py-3 border-b border-black/5">
+    <div class="flex items-center space-x-2">
+      <div class="w-8 h-8 rounded-xl bg-[#1B1B19] text-white flex items-center justify-center font-bold text-sm">sn</div>
+      <div>
+        <h1 class="text-base font-bold tracking-tight">splitnest</h1>
+        <div class="flex items-center space-x-1.5 text-[10px] text-emerald-600 font-medium">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+          <span>Production • @splitnest_bot</span>
+        </div>
+      </div>
+    </div>
+    <span class="text-[10px] font-mono bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold">PROD</span>
+  </header>
+
+  <!-- Main Container -->
+  <main id="app-container" class="w-full max-w-md flex-1 flex flex-col mt-4 space-y-4">
+    <!-- Group & Sync Status Card -->
+    <div class="bg-white/80 backdrop-blur-md rounded-2xl p-4 border border-black/5 shadow-xs flex items-center justify-between">
+      <div>
+        <p class="text-[10px] font-mono uppercase text-black/50 tracking-wider">Active Group</p>
+        <h2 id="group-title-display" class="text-sm font-bold text-black/90">Loading group...</h2>
+      </div>
+      <div class="text-right">
+        <p class="text-[10px] font-mono uppercase text-black/50 tracking-wider">Sync Status</p>
+        <span id="sync-status" class="inline-flex items-center text-xs font-semibold text-emerald-600">
+          <span class="w-2 h-2 rounded-full bg-emerald-500 mr-1.5"></span> Connected
+        </span>
+      </div>
+    </div>
+
+    <!-- OCR Receipt Banner -->
+    <div class="bg-gradient-to-r from-indigo-500/10 to-sky-500/10 border border-indigo-200/80 rounded-2xl p-3.5 flex items-center justify-between">
+      <div class="flex items-center space-x-2.5">
+        <div class="p-2 bg-indigo-600 text-white rounded-xl">
+          <i data-lucide="sparkles" class="w-4 h-4 text-amber-300"></i>
+        </div>
+        <div>
+          <h3 class="text-xs font-bold text-indigo-950">Gemini AI Receipt OCR</h3>
+          <p class="text-[10px] text-indigo-800/80">Send receipt photos in Telegram to auto-split!</p>
+        </div>
+      </div>
+      <a href="https://t.me/splitnest_bot" target="_blank" class="px-2.5 py-1 bg-indigo-600 text-white rounded-lg text-[10px] font-bold shadow-xs hover:bg-indigo-700">Open Bot</a>
+    </div>
+
+    <!-- Active Balances & Ledger View -->
+    <div id="ledger-content" class="bg-white/80 rounded-2xl p-4 border border-black/5 shadow-xs space-y-3">
+      <div class="flex items-center justify-between">
+        <h3 class="text-xs font-bold uppercase tracking-wider text-black/60 font-mono">Balances & Ledger</h3>
+        <span id="member-count-badge" class="text-[10px] bg-black/5 px-2 py-0.5 rounded-full font-mono">0 members</span>
+      </div>
+      <div id="balances-list" class="space-y-2 text-xs">
+        <p class="text-black/40 italic text-center py-4">Syncing live spreadsheet data...</p>
+      </div>
+    </div>
+  </main>
+
+  <!-- Telegram WebApp Script Init -->
+  <script>
+    const CONFIG = {
+      ENV: "production",
+      BOT_USERNAME: "splitnest_bot",
+      SPREADSHEET_ID: "106hKhXEEObyEbWJDxu0dFax-fKUIiDmkO1klpPPSJuM",
+      MINI_APP_URL: "https://t.me/splitnest_bot/ambugan",
+      DEFAULT_GAS_URL: "https://script.google.com/macros/s/AKfycbyzs2hkta9HPE7MDkHgXw6Fk56r9WBaSb_7M9Y3H_cIUfZsDdJJsIpF8dEqTvC4bU5J/exec"
+    };
+
+    const tg = window.Telegram?.WebApp;
+    if (tg) {
+      tg.ready();
+      tg.expand();
+    }
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const chatId = tg?.initDataUnsafe?.chat?.id || urlParams.get('chat_id') || urlParams.get('startapp') || '';
+    const groupTitle = tg?.initDataUnsafe?.chat?.title || urlParams.get('group_title') || 'My Group';
+
+    document.getElementById('group-title-display').innerText = groupTitle;
+
+    // Initialize Lucide icons
+    if (window.lucide) {
+      lucide.createIcons();
+    }
+  </script>
+</body>
+</html>

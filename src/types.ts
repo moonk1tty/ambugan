@@ -26,6 +26,30 @@ export interface Expense {
   createdBy: string;
   category?: string;
   chatId?: string;
+  // Receipt Splitter Extended Metadata
+  isReceiptSplitter?: boolean;
+  merchant?: string;
+  itemsBreakdown?: Array<{
+    name: string;
+    price: number;
+    quantity: number;
+    assignedTo: string[];
+  }>;
+  tax?: number;
+  tip?: number;
+  discount?: number;
+}
+
+export interface MemberPaymentDetails {
+  member?: string;
+  memberName?: string;
+  bankName: string; // e.g. GCash, Maya, BPI, BDO, UnionBank, GoTyme, SeaBank, Cash, etc.
+  bankOrWallet?: string;
+  accountName: string;
+  accountNumber: string;
+  qrCodeUrl?: string; // Base64 data URL or Image URL
+  notes?: string;
+  updatedAt?: string;
 }
 
 export interface Settlement {
@@ -46,19 +70,54 @@ export interface TelegramUser {
   photo_url?: string;
 }
 
+export interface ReceiptItem {
+  name: string;
+  price: number;
+  quantity?: number;
+  selected?: boolean;
+  assignedTo?: string[];
+}
+
+export interface PendingReceipt {
+  id: string;
+  timestamp: string;
+  merchant: string;
+  amount: number;
+  currency: string;
+  paidBy: string;
+  category?: string;
+  chatId?: string;
+  tax?: number;
+  tip?: number;
+  discount?: number;
+  items: ReceiptItem[];
+  uploaderName?: string;
+  status: 'pending' | 'submitted' | 'discarded';
+  rawSummary?: string;
+}
+
+export interface ParsedReceiptData {
+  merchant: string;
+  total: number;
+  currency: string;
+  date?: string;
+  category?: string;
+  tax?: number;
+  tip?: number;
+  discount?: number;
+  items: ReceiptItem[];
+  summary?: string;
+  imageUrl?: string;
+  pendingId?: string;
+}
+
 export interface GroupChatMessage {
   id: string;
   sender: string;
   text?: string;
   isBot?: boolean;
   timestamp: string;
-  receiptData?: {
-    merchant: string;
-    total: number;
-    category: string;
-    date: string;
-    imageUrl?: string;
-  };
+  receiptData?: ParsedReceiptData;
 }
 
 export function formatAmount(val: number | string | undefined | null, decimals: number = 2): string {

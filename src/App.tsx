@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Loader2 } from 'lucide-react';
 import { MiniAppView } from './components/MiniAppView';
 import { Expense, Settlement, RegisteredUser } from './types';
+import { ENVIRONMENTS, getStoredEnvironment } from './config/environments';
 
 const STORAGE_KEYS = {
   GAS_URL: 'splitsquad_gas_url',
@@ -168,9 +169,11 @@ export default function App() {
   const [settlements, setSettlements] = useState<Settlement[]>([]);
 
   const [gasUrl, setGasUrl] = useState<string>(() => {
+    const activeEnv = getStoredEnvironment();
+    const envDefault = ENVIRONMENTS[activeEnv]?.defaultGasUrl || ENVIRONMENTS.main.defaultGasUrl;
     const saved = localStorage.getItem(STORAGE_KEYS.GAS_URL);
     if (!saved || saved.includes('AKfycbzBu8cufpEzEl9vZHTj4wajJn_Ax5bfFL9hN3yT5xg')) {
-      return ((import.meta as any).env?.VITE_GAS_URL as string) || DEFAULT_GAS_URL;
+      return ((import.meta as any).env?.VITE_GAS_URL as string) || envDefault || DEFAULT_GAS_URL;
     }
     return saved;
   });
@@ -490,23 +493,27 @@ export default function App() {
   }, [chatId, gasUrl, fetchGasData]);
 
   const handleAddExpense = async (newExp: Omit<Expense, 'id' | 'timestamp'>) => {
+    const currentChatId = newExp.chatId || chatId || getChatId();
     const created: Expense = {
       ...newExp,
       id: 'EXP-' + Date.now(),
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      chatId: currentChatId
     };
 
     // Optimistic local state and localStorage update
     const updatedExpenses = [created, ...expenses];
     setExpenses(updatedExpenses);
     try {
-      localStorage.setItem(`splitnest_expenses_${chatId || 'default'}`, JSON.stringify(updatedExpenses));
+      localStorage.setItem(`splitnest_expenses_${currentChatId || 'default'}`, JSON.stringify(updatedExpenses));
+      if (currentChatId) {
+        localStorage.setItem(`${STORAGE_KEYS.EXPENSES}_${currentChatId}`, JSON.stringify(updatedExpenses));
+      }
     } catch (e) {}
 
     // Send to GAS backend if URL is configured
     if (gasUrl && gasUrl.startsWith('http')) {
       try {
-        const currentChatId = chatId || getChatId();
         const tg = (window as any).Telegram?.WebApp;
         const tgUser = tg?.initDataUnsafe?.user;
 

@@ -9,16 +9,33 @@ import {
   AlertCircle,
   Sliders,
   Send,
-  Settings,
   RefreshCw,
   Users,
   UserMinus,
   Trash2,
   Pencil,
   Check,
-  X
+  X,
+  Sparkles,
+  Camera,
+  Receipt,
+  Layers,
+  Zap,
+  QrCode,
+  CreditCard,
+  Copy,
+  Search,
+  ArrowUpDown,
+  SlidersHorizontal,
+  Eye,
+  UploadCloud,
+  Building2,
+  Wallet,
+  ExternalLink
 } from 'lucide-react';
-import { Expense, Settlement, RegisteredUser, formatAmount } from '../types';
+import { Expense, Settlement, RegisteredUser, formatAmount, ReceiptItem, ParsedReceiptData, MemberPaymentDetails } from '../types';
+import { ReceiptScannerModal } from './ReceiptScannerModal';
+import { ItemizedReceiptSplitter } from './ItemizedReceiptSplitter';
 
 interface MiniAppViewProps {
   expenses: Expense[];
@@ -87,6 +104,104 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [percentShares, setPercentShares] = useState<Record<string, string>>({});
   const [singleDebtor, setSingleDebtor] = useState<string>('');
   
+  const [showScannerModal, setShowScannerModal] = useState(false);
+  const [logSubTab, setLogSubTab] = useState<'quick' | 'splitter'>('quick');
+  const [showItemizedSplitter, setShowItemizedSplitter] = useState(false);
+  const [itemizedInitialData, setItemizedInitialData] = useState<ParsedReceiptData | null>(null);
+  const [scannedItemsPreview, setScannedItemsPreview] = useState<ReceiptItem[]>([]);
+
+  const handleApplyScannedReceipt = (data: {
+    description: string;
+    amount: number;
+    category: string;
+    items: ReceiptItem[];
+    currency: string;
+  }) => {
+    setDescription(data.description);
+    setAmount(String(data.amount));
+    if (data.currency) setCurrency(data.currency);
+    setScannedItemsPreview(data.items || []);
+    setSplitMode('Equal');
+    
+    // Also prepare for itemized modal if the user wants to open it
+    setItemizedInitialData({
+      merchant: data.description.replace(/^Receipt:\s*/, ''),
+      total: data.amount,
+      currency: data.currency || '₱',
+      category: data.category,
+      items: data.items
+    });
+
+    setToastMessage(`✨ Scanned ${data.currency}${formatAmount(data.amount)} from ${data.description}`);
+    setShowSuccessToast(true);
+    setTimeout(() => setShowSuccessToast(false), 3000);
+  };
+
+  const handleSaveItemizedExpense = async (data: {
+    description: string;
+    amount: number;
+    paidBy: string;
+    currency: string;
+    category: string;
+    shares: Record<string, number>;
+    itemsBreakdown: {
+      name: string;
+      price: number;
+      quantity: number;
+      assignedTo: string[];
+    }[];
+    tax: number;
+    tip: number;
+    discount: number;
+  }) => {
+    try {
+      setActionLoading({
+        active: true,
+        success: false,
+        title: 'Saving Itemized Receipt...',
+        subtitle: `Assigning dishes across members & syncing to cloud...`
+      });
+
+      await onAddExpense({
+        description: data.description,
+        amount: data.amount,
+        paidBy: data.paidBy || activeUser,
+        currency: data.currency || '₱',
+        splitMode: 'Exact Amounts',
+        shares: data.shares,
+        category: data.category || 'Food & Drink',
+        createdBy: activeUser,
+        chatId: chatId,
+        isReceiptSplitter: true,
+        merchant: data.description.replace(/^Receipt:\s*/, ''),
+        itemsBreakdown: data.itemsBreakdown,
+        tax: data.tax,
+        tip: data.tip,
+        discount: data.discount
+      });
+
+      // Clear any stored receipt data to clear the receipt splitter tab
+      setItemizedInitialData(null);
+      setScannedItemsPreview([]);
+
+      setActionLoading({
+        active: true,
+        success: true,
+        title: 'Receipt Recorded!',
+        subtitle: `Split calculated for ${Object.keys(data.shares).length} group members.`
+      });
+      await new Promise(r => setTimeout(r, 650));
+
+      setToastMessage(`🧾 Saved ${data.description} (${data.currency}${formatAmount(data.amount)}) to Ledger`);
+      setShowSuccessToast(true);
+      setTimeout(() => setShowSuccessToast(false), 3500);
+    } catch (err: any) {
+      console.error('Failed to save itemized receipt:', err);
+    } finally {
+      setActionLoading({ active: false, success: false, title: '', subtitle: '' });
+    }
+  };
+
   // Toast & Modals
   const [showSuccessToast, setShowSuccessToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
@@ -105,7 +220,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [settleAmount, setSettleAmount] = useState('');
   const [settleMethod, setSettleMethod] = useState('Cash');
 
-  // Edit Expense Modal State
+  // Edit Expense Modal State (Standard Quick Edit)
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [editDescription, setEditDescription] = useState('');
   const [editAmount, setEditAmount] = useState('');
@@ -119,10 +234,47 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeletingExpense, setIsDeletingExpense] = useState(false);
 
-  const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [inputGasUrl, setInputGasUrl] = useState(gasUrl);
-  const [isTestingUrl, setIsTestingUrl] = useState(false);
-  const [testResult, setTestResult] = useState<{ status: 'success' | 'error'; message: string } | null>(null);
+  // Edit Receipt Splitter Modal State
+  const [editingReceiptExpense, setEditingReceiptExpense] = useState<Expense | null>(null);
+
+  // Member Payment Details & QR State
+  const paymentStorageKey = `splitnest_payment_details_${chatId || 'default'}`;
+  const [paymentDetails, setPaymentDetails] = useState<Record<string, MemberPaymentDetails>>(() => {
+    try {
+      const saved = localStorage.getItem(paymentStorageKey);
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [showPaymentDirectoryModal, setShowPaymentDirectoryModal] = useState(false);
+  const [paymentTargetMember, setPaymentTargetMember] = useState<string>('');
+  const [paymentBankName, setPaymentBankName] = useState<string>('GCash');
+  const [paymentCustomBank, setPaymentCustomBank] = useState<string>('');
+  const [paymentAccountName, setPaymentAccountName] = useState<string>('');
+  const [paymentAccountNumber, setPaymentAccountNumber] = useState<string>('');
+  const [paymentQrCodeUrl, setPaymentQrCodeUrl] = useState<string>('');
+  const [paymentNotes, setPaymentNotes] = useState<string>('');
+  const [copiedNotification, setCopiedNotification] = useState<string | null>(null);
+  const [viewingQrModal, setViewingQrModal] = useState<{
+    memberName: string;
+    bankName: string;
+    accountName: string;
+    accountNumber: string;
+    qrCodeUrl: string;
+    notes?: string;
+  } | null>(null);
+
+  // History / Ledger Search & Sorting State
+  const [historySearch, setHistorySearch] = useState('');
+  const [historySort, setHistorySort] = useState<'latest' | 'oldest' | 'highest' | 'lowest'>('latest');
+
+  // All Settlements Modal / Page View State & Filters
+  const [showAllSettlementsModal, setShowAllSettlementsModal] = useState(false);
+  const [settlementFilterPayer, setSettlementFilterPayer] = useState<string>('all');
+  const [settlementFilterReceiver, setSettlementFilterReceiver] = useState<string>('all');
+  const [settlementSearch, setSettlementSearch] = useState<string>('');
 
   // Global Action Processing Loader State
   const [actionLoading, setActionLoading] = useState<{
@@ -200,10 +352,6 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       setActionLoading({ active: false, success: false, title: '', subtitle: '' });
     }
   };
-
-  useEffect(() => {
-    setInputGasUrl(gasUrl);
-  }, [gasUrl]);
 
   // Sync paidBy with activeUser when activeUser changes
   useEffect(() => {
@@ -578,7 +726,8 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       shares: finalShares,
       percentages: finalPercentages,
       singleOwer: finalSingleOwer,
-      createdBy: activeUser
+      createdBy: activeUser,
+      chatId: chatId
     };
 
     const savedDesc = description.trim();
@@ -687,8 +836,136 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     }
   };
 
+  // Payment Details Management Helpers
+  const handleOpenPaymentModal = (member?: string) => {
+    const target = member || activeUser;
+    setPaymentTargetMember(target);
+    const existing = paymentDetails[target];
+    if (existing) {
+      setPaymentBankName(existing.bankName || 'GCash');
+      setPaymentCustomBank(existing.bankName && !['GCash', 'Maya', 'BPI', 'BDO', 'UnionBank', 'GoTyme', 'SeaBank', 'Cash'].includes(existing.bankName) ? existing.bankName : '');
+      setPaymentAccountName(existing.accountName || '');
+      setPaymentAccountNumber(existing.accountNumber || '');
+      setPaymentQrCodeUrl(existing.qrCodeUrl || '');
+      setPaymentNotes(existing.notes || '');
+    } else {
+      setPaymentBankName('GCash');
+      setPaymentCustomBank('');
+      setPaymentAccountName(target);
+      setPaymentAccountNumber('');
+      setPaymentQrCodeUrl('');
+      setPaymentNotes('');
+    }
+    setShowPaymentModal(true);
+  };
+
+  const handleSavePaymentForm = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!paymentTargetMember) return;
+    const finalBank = paymentBankName === 'Other' ? (paymentCustomBank.trim() || 'Bank Transfer') : paymentBankName;
+    const newDetails: MemberPaymentDetails = {
+      memberName: paymentTargetMember,
+      bankName: finalBank,
+      accountName: paymentAccountName.trim() || paymentTargetMember,
+      accountNumber: paymentAccountNumber.trim(),
+      qrCodeUrl: paymentQrCodeUrl || undefined,
+      notes: paymentNotes.trim() || undefined,
+      updatedAt: new Date().toISOString()
+    };
+    const updated = { ...paymentDetails, [paymentTargetMember]: newDetails };
+    setPaymentDetails(updated);
+    try {
+      localStorage.setItem(paymentStorageKey, JSON.stringify(updated));
+    } catch (e) {
+      console.error('Failed to save payment info', e);
+    }
+    setShowPaymentModal(false);
+    setToastMessage(`💳 Payment details saved for ${paymentTargetMember}!`);
+    setShowSuccessToast(true);
+    setTimeout(() => setShowSuccessToast(false), 3000);
+  };
+
+  const handleRemovePaymentDetails = (member: string) => {
+    const updated = { ...paymentDetails };
+    delete updated[member];
+    setPaymentDetails(updated);
+    try {
+      localStorage.setItem(paymentStorageKey, JSON.stringify(updated));
+    } catch (e) {
+      console.error('Failed to remove payment info', e);
+    }
+    setShowPaymentModal(false);
+    setToastMessage(`Removed payment info for ${member}`);
+    setShowSuccessToast(true);
+    setTimeout(() => setShowSuccessToast(false), 2500);
+  };
+
+  const handleQrFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const result = event.target?.result as string;
+      if (!result) return;
+      
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 800;
+        let width = img.width;
+        let height = img.height;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          const compressed = canvas.toDataURL('image/jpeg', 0.85);
+          setPaymentQrCodeUrl(compressed);
+        } else {
+          setPaymentQrCodeUrl(result);
+        }
+      };
+      img.onerror = () => {
+        setPaymentQrCodeUrl(result);
+      };
+      img.src = result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleCopyText = (text: string, label: string = 'Account number copied!') => {
+    if (!text) return;
+    try {
+      navigator.clipboard.writeText(text);
+      setCopiedNotification(label);
+      setTimeout(() => setCopiedNotification(null), 2000);
+    } catch (e) {
+      console.error('Failed to copy', e);
+    }
+  };
+
   // Edit Expense Modal Handlers
   const handleOpenEditModal = (exp: Expense) => {
+    const isReceipt = Boolean(
+      exp.isReceiptSplitter || 
+      (exp.itemsBreakdown && exp.itemsBreakdown.length > 0) || 
+      (exp.description && exp.description.startsWith('Receipt:'))
+    );
+
+    if (isReceipt) {
+      setEditingReceiptExpense(exp);
+      return;
+    }
+
     setEditingExpense(exp);
     setEditDescription(exp.description || '');
     setEditAmount(String(exp.amount || ''));
@@ -738,6 +1015,73 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
     setEditSingleDebtor(exp.singleOwer || (availableUsers.find(u => u !== (exp.paidBy || activeUser)) || availableUsers[0]));
     setShowDeleteConfirm(false);
+  };
+
+  const handleSaveEditedReceipt = async (data: {
+    description: string;
+    amount: number;
+    paidBy: string;
+    currency: string;
+    category: string;
+    shares: Record<string, number>;
+    itemsBreakdown: {
+      name: string;
+      price: number;
+      quantity: number;
+      assignedTo: string[];
+    }[];
+    tax: number;
+    tip: number;
+    discount: number;
+  }) => {
+    if (!editingReceiptExpense) return;
+    try {
+      setActionLoading({
+        active: true,
+        success: false,
+        title: 'Updating Receipt Split...',
+        subtitle: `Recalculating member shares & updating ledger...`
+      });
+
+      const updated: Expense = {
+        ...editingReceiptExpense,
+        description: data.description,
+        amount: data.amount,
+        paidBy: data.paidBy || activeUser,
+        currency: data.currency || '₱',
+        splitMode: 'Exact Amounts',
+        shares: data.shares,
+        category: data.category || 'Food & Drink',
+        isReceiptSplitter: true,
+        merchant: data.description.replace(/^Receipt:\s*/, ''),
+        itemsBreakdown: data.itemsBreakdown,
+        tax: data.tax,
+        tip: data.tip,
+        discount: data.discount
+      };
+
+      if (onEditExpense) {
+        await onEditExpense(updated);
+      }
+
+      setEditingReceiptExpense(null);
+
+      setActionLoading({
+        active: true,
+        success: true,
+        title: 'Receipt Updated!',
+        subtitle: 'Ledger and balance totals have been recomputed.'
+      });
+      await new Promise(r => setTimeout(r, 600));
+
+      setToastMessage(`🧾 Updated ${data.description} (${data.currency}${formatAmount(data.amount)})`);
+      setShowSuccessToast(true);
+      setTimeout(() => setShowSuccessToast(false), 3000);
+    } catch (err) {
+      console.error('Failed to update receipt expense:', err);
+    } finally {
+      setActionLoading({ active: false, success: false, title: '', subtitle: '' });
+    }
   };
 
   const handleSaveEditedExpense = async (e: React.FormEvent) => {
@@ -826,10 +1170,11 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   };
 
   const handleDeleteExpenseAction = async () => {
-    if (!editingExpense) return;
+    const targetExp = editingExpense || editingReceiptExpense;
+    if (!targetExp) return;
     setIsDeletingExpense(true);
-    const targetId = editingExpense.id;
-    const targetDesc = editingExpense.description;
+    const targetId = targetExp.id;
+    const targetDesc = targetExp.description;
 
     setActionLoading({
       active: true,
@@ -855,6 +1200,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       });
       await new Promise(r => setTimeout(r, 550));
       setEditingExpense(null);
+      setEditingReceiptExpense(null);
     } catch (err) {
       console.error('Failed to delete expense:', err);
     } finally {
@@ -944,13 +1290,13 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
           )}
         </div>
 
-        <div className="flex items-center space-x-1.5">
+        <div className="flex items-center space-x-2">
           {availableUsers.length > 1 ? (
             <button
               type="button"
               onClick={() => setShowMembersModal(true)}
               title={`View & manage ${availableUsers.length} group members`}
-              className="text-[10px] font-mono font-medium px-2 py-1 bg-black/5 hover:bg-black/10 rounded-full text-[#1B1B19]/70 hover:text-[#1B1B19] flex items-center space-x-1 border border-black/5 transition cursor-pointer"
+              className="text-[10px] font-mono font-medium px-2.5 py-1 bg-black/5 hover:bg-black/10 rounded-full text-[#1B1B19]/70 hover:text-[#1B1B19] flex items-center space-x-1 border border-black/5 transition cursor-pointer"
             >
               <Users className="w-3 h-3 text-[#1B1B19]/60" />
               <span>{availableUsers.length}</span>
@@ -967,11 +1313,18 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
             </button>
           )}
 
-          <div 
-            title={isOnlineGas ? 'Synced with cloud' : 'Connecting...'}
-            className="p-1.5 bg-black/5 rounded-full text-[#1B1B19]/70 flex items-center justify-center border border-black/5 select-none"
+          {/* Clean Status Dot Indicator */}
+          <div
+            title={isOnlineGas ? 'Connected & Synced with Google Sheets' : 'Connecting to Google Sheets...'}
+            className="flex items-center justify-center p-1 cursor-default"
           >
-            <span className={`w-2 h-2 rounded-full ${isOnlineGas ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
+            <span
+              className={`w-2.5 h-2.5 rounded-full transition-all duration-300 ${
+                isOnlineGas
+                  ? 'bg-emerald-500 ring-4 ring-emerald-500/20'
+                  : 'bg-amber-400 animate-pulse ring-4 ring-amber-400/20'
+              }`}
+            />
           </div>
         </div>
       </header>
@@ -1034,11 +1387,63 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
         {/* TAB 1: LOG EXPENSE FORM */}
         {activeTab === 'new' && (
-          <form onSubmit={handleSingleSubmit} className="bg-white/70 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-sm space-y-3">
-            <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold flex justify-between items-center">
-              <span>Log Expense</span>
-              <span className="text-[9px] text-[#1B1B19]/40">Default: ₱ (PHP)</span>
+          <div className="space-y-3">
+            
+            {/* Sub-tabs under Log: Quick Entry vs Receipt Splitter */}
+            <div className="bg-black/5 p-1 rounded-2xl flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider font-semibold">
+              <button
+                type="button"
+                onClick={() => setLogSubTab('quick')}
+                className={`flex-1 py-2 px-3 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                  logSubTab === 'quick'
+                    ? 'bg-white text-[#1B1B19] shadow-xs font-bold'
+                    : 'text-[#1B1B19]/60 hover:text-[#1B1B19]'
+                }`}
+              >
+                <Zap className="w-3.5 h-3.5 text-amber-500" />
+                <span>Quick Entry</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setLogSubTab('splitter')}
+                className={`flex-1 py-2 px-3 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                  logSubTab === 'splitter'
+                    ? 'bg-white text-[#1B1B19] shadow-xs font-bold'
+                    : 'text-[#1B1B19]/60 hover:text-[#1B1B19]'
+                }`}
+              >
+                <Receipt className="w-3.5 h-3.5 text-[#4A6CF7]" />
+                <span>Receipt Splitter</span>
+              </button>
             </div>
+
+            {logSubTab === 'quick' && (
+              <form onSubmit={handleSingleSubmit} className="bg-white/70 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-sm space-y-3">
+            {scannedItemsPreview.length > 0 && (
+              <div className="p-2.5 bg-indigo-50/80 border border-indigo-100 rounded-xl space-y-1.5">
+                <div className="flex items-center justify-between text-[10px] text-indigo-700 font-semibold">
+                  <span className="flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-amber-500" />
+                    {scannedItemsPreview.length} Parsed Items from Receipt
+                  </span>
+                  <button 
+                    type="button"
+                    onClick={() => setScannedItemsPreview([])}
+                    className="text-indigo-400 hover:text-indigo-600 text-[10px]"
+                  >
+                    Clear items
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
+                  {scannedItemsPreview.map((it, idx) => (
+                    <span key={idx} className="inline-flex items-center gap-1 text-[10px] bg-white border border-indigo-200/60 px-2 py-0.5 rounded-md text-indigo-900 font-medium">
+                      <span>{it.name}</span>
+                      <span className="font-bold font-mono text-indigo-600">{currency}{formatAmount(it.price)}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div>
               <input
@@ -1084,7 +1489,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                     }
                   }}
                   required
-                  className="w-full bg-white/60 border border-black/5 px-3.5 py-2.5 rounded-xl text-sm font-semibold font-mono text-[#1B1B19] placeholder-[#1B1B19]/40 focus:outline-none focus:bg-white focus:ring-2 focus:ring-[#4A6CF7]/20 transition"
+                  className="w-full bg-white/60 border border-black/5 px-3.5 py-2.5 rounded-xl text-sm font-semibold font-mono text-left text-[#1B1B19] placeholder-[#1B1B19]/40 focus:outline-none focus:bg-white focus:ring-2 focus:ring-[#4A6CF7]/20 transition"
                 />
               </div>
             </div>
@@ -1392,17 +1797,33 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
             <button
               type="submit"
-              className="w-full bg-[#1B1B19] hover:bg-black text-white font-semibold py-3.5 rounded-2xl text-sm transition shadow-md active:scale-[0.99] flex items-center justify-center space-x-2 mt-2"
+              className="w-full bg-[#18181B] hover:bg-black text-white font-semibold py-3.5 px-6 rounded-full text-sm transition shadow-sm active:scale-[0.99] flex items-center justify-center gap-2 mt-2 cursor-pointer"
             >
               <Send className="w-4 h-4" />
-              <span>Submit Entry ({currency}{parseCleanNumber(amount) > 0 ? ` ${formatAmount(parseCleanNumber(amount))}` : ''})</span>
+              <span>Submit Entry</span>
             </button>
           </form>
+        )}
+
+        {logSubTab === 'splitter' && (
+          <ItemizedReceiptSplitter
+            onSaveToLedger={handleSaveItemizedExpense}
+            groupMembers={availableUsers}
+            initialReceiptData={itemizedInitialData}
+            defaultPayer={paidBy || activeUser}
+            defaultCurrency={currency}
+            onOpenScanner={() => setShowScannerModal(true)}
+            onSwitchToQuickEntry={() => setLogSubTab('quick')}
+            gasUrl={gasUrl}
+          />
+        )}
+          </div>
         )}
 
         {/* TAB 2: BALANCES & INDIVIDUAL SETTLEMENTS */}
         {activeTab === 'balances' && (
           <div className="space-y-3">
+            {/* 1. Member Balance Pairings */}
             <div className="bg-white/70 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-sm space-y-3">
               <div className="flex items-center justify-between border-b border-black/5 pb-2">
                 <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold">
@@ -1423,9 +1844,6 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 </div>
               ) : (
                 <div className="space-y-2">
-                  <p className="text-[11px] text-[#1B1B19]/60 leading-tight">
-                    Settle balances individually for each member pair. All group members see the same live settlements.
-                  </p>
                   {activeBalances.map((cb, i) => {
                     const isDebtor = cb.debtor.toLowerCase() === activeUser.toLowerCase();
                     const isCreditor = cb.creditor.toLowerCase() === activeUser.toLowerCase();
@@ -1433,7 +1851,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                     return (
                       <div 
                         key={i} 
-                        className={`p-3 rounded-2xl border transition flex items-center justify-between gap-2.5 ${
+                        className={`p-3.5 rounded-2xl border transition flex items-center justify-between gap-2.5 ${
                           isDebtor 
                             ? 'bg-rose-50/60 border-rose-200/60' 
                             : isCreditor 
@@ -1441,7 +1859,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                               : 'bg-white/60 border-black/5'
                         }`}
                       >
-                        <div className="min-w-0 space-y-0.5">
+                        <div className="min-w-0">
                           <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="font-bold text-xs text-[#1B1B19]">
                               {isDebtor ? (
@@ -1463,9 +1881,6 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                               </span>
                             )}
                           </div>
-                          <p className="text-[10px] text-[#1B1B19]/50 font-mono">
-                            Direct Settlement • {cb.currency}
-                          </p>
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0">
@@ -1475,7 +1890,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                           <button
                             type="button"
                             onClick={() => handleOpenIndividualSettle(cb)}
-                            className="bg-[#1B1B19] hover:bg-black text-white px-3 py-1.5 rounded-xl font-semibold text-xs shadow-sm transition active:scale-95 flex items-center gap-1"
+                            className="bg-[#1B1B19] hover:bg-black text-white px-3 py-1.5 rounded-xl font-semibold text-xs shadow-sm transition active:scale-95 flex items-center gap-1 cursor-pointer"
                           >
                             <ArrowRightLeft className="w-3 h-3" />
                             <span>Settle</span>
@@ -1488,107 +1903,384 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
               )}
             </div>
 
-            {/* Recent Settlements */}
-            <div className="bg-white/70 backdrop-blur-md border border-black/5 p-4 rounded-[20px] shadow-sm space-y-2">
-              <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold">
-                Settlement History
+            {/* 2. Recent Settlements (Display up to 5 with View All button) */}
+            <div className="bg-white/70 backdrop-blur-md border border-black/5 p-4 rounded-[20px] shadow-sm space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold flex items-center gap-1.5">
+                  <History className="w-3.5 h-3.5 text-[#1B1B19]" />
+                  <span>Settlement History ({settlements.length})</span>
+                </div>
+                {settlements.length > 5 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllSettlementsModal(true)}
+                    className="text-[10px] font-mono text-[#4A6CF7] hover:underline font-bold flex items-center gap-0.5 cursor-pointer"
+                  >
+                    <span>View all ({settlements.length})</span>
+                    <span>→</span>
+                  </button>
+                )}
               </div>
+
               {settlements.length === 0 ? (
                 <p className="text-xs text-[#1B1B19]/50 italic text-center py-2">No settlements recorded yet</p>
               ) : (
-                <div className="space-y-1.5">
-                  {settlements.map((s, i) => (
-                    <div key={i} className="bg-white/50 p-2.5 rounded-xl border border-black/5 flex items-center justify-between text-xs">
-                      <div>
-                        <span className="font-semibold text-[#1B1B19]">{s.payer} paid {s.receiver}</span>
-                        <p className="text-[10px] text-[#1B1B19]/50 font-mono">
-                          {s.method ? `via ${s.method} • ` : ''}{new Date(s.timestamp).toLocaleDateString()}
-                        </p>
+                <>
+                  <div className="space-y-1.5">
+                    {settlements.slice(0, 5).map((s, i) => (
+                      <div key={i} className="bg-white/70 hover:bg-white p-2.5 rounded-xl border border-black/5 flex items-center justify-between text-xs transition">
+                        <div>
+                          <div className="font-semibold text-[#1B1B19]">
+                            <span>{s.payer}</span>
+                            <span className="text-[#1B1B19]/50 font-normal px-1">paid</span>
+                            <span className="text-emerald-700 font-semibold">{s.receiver}</span>
+                          </div>
+                          <p className="text-[10px] text-[#1B1B19]/50 font-mono mt-0.5">
+                            {s.method ? `via ${s.method} • ` : ''}{new Date(s.timestamp).toLocaleDateString()}
+                          </p>
+                        </div>
+                        <span className="font-bold font-mono text-[#1B1B19] text-sm">{s.currency || '₱'}{formatAmount(Number(s.amount))}</span>
                       </div>
-                      <span className="font-bold font-mono text-[#1B1B19]">{s.currency || '₱'}{formatAmount(Number(s.amount))}</span>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+
+                  {settlements.length > 5 ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllSettlementsModal(true)}
+                      className="w-full py-2 bg-black/5 hover:bg-black/10 active:scale-[0.99] text-[#1B1B19] rounded-xl text-xs font-mono font-semibold transition flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Eye className="w-3.5 h-3.5 text-[#1B1B19]/70" />
+                      <span>View All Settlements ({settlements.length})</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllSettlementsModal(true)}
+                      className="w-full py-1.5 text-center text-[10px] font-mono text-[#4A6CF7] hover:underline font-semibold cursor-pointer"
+                    >
+                      Filter & Search Settlements →
+                    </button>
+                  )}
+                </>
               )}
             </div>
+
+            {/* 3. Member Payment Details & QR Codes Container */}
+            {(() => {
+              const configuredMembers = availableUsers.filter(u => Boolean(paymentDetails[u]));
+              const unconfiguredMembersCount = availableUsers.length - configuredMembers.length;
+
+              return (
+                <div className="bg-white/70 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-sm space-y-3">
+                  <div className="flex items-center justify-between border-b border-black/5 pb-2">
+                    <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold flex items-center gap-1.5">
+                      <QrCode className="w-3.5 h-3.5 text-[#1B1B19]" />
+                      <span>Payment details</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowPaymentDirectoryModal(true)}
+                      className="bg-[#1B1B19] hover:bg-black text-white px-2.5 py-1 rounded-xl text-xs font-mono font-medium flex items-center space-x-1 shadow-xs transition cursor-pointer"
+                    >
+                      <PlusCircle className="w-3 h-3 text-emerald-400" />
+                      <span>Manage</span>
+                    </button>
+                  </div>
+
+                  {configuredMembers.length === 0 ? (
+                    <div className="p-4 rounded-2xl border border-dashed border-black/10 bg-white/40 text-center space-y-2">
+                      <p className="text-xs text-[#1B1B19]/70 font-medium">No payment accounts or QR codes saved yet.</p>
+                      <p className="text-[10px] text-[#1B1B19]/40 font-mono">Add your GCash, Maya, or bank details to speed up settlements for everyone.</p>
+                      <button
+                        type="button"
+                        onClick={() => setShowPaymentDirectoryModal(true)}
+                        className="inline-flex items-center gap-1 bg-black/5 hover:bg-black/10 text-[#1B1B19] text-xs font-mono px-3 py-1.5 rounded-xl transition cursor-pointer font-semibold"
+                      >
+                        <PlusCircle className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Set Up Payment Info</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {configuredMembers.map((member) => {
+                          const details = paymentDetails[member];
+                          const isCurrent = member === activeUser;
+
+                          return (
+                            <div
+                              key={member}
+                              className="p-3 rounded-2xl border border-black/5 bg-white/80 hover:bg-white transition space-y-2 shadow-xs"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-bold text-xs text-[#1B1B19] truncate">{member}</span>
+                                    {isCurrent && (
+                                      <span className="text-[8px] font-mono px-1 py-0.2 bg-[#4A6CF7]/10 text-[#4A6CF7] rounded font-semibold">
+                                        You
+                                      </span>
+                                    )}
+                                    <span className="text-[9px] font-mono px-1.5 py-0.2 bg-[#1B1B19] text-white rounded font-bold">
+                                      {details.bankName}
+                                    </span>
+                                  </div>
+                                  <p className="text-[11px] text-[#1B1B19]/70 font-mono mt-0.5 truncate">
+                                    {details.accountName}
+                                  </p>
+                                </div>
+
+                                <div className="flex items-center gap-1 shrink-0">
+                                  {details.qrCodeUrl && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setViewingQrModal({
+                                        memberName: member,
+                                        bankName: details.bankName,
+                                        accountName: details.accountName,
+                                        accountNumber: details.accountNumber,
+                                        qrCodeUrl: details.qrCodeUrl!,
+                                        notes: details.notes
+                                      })}
+                                      title="View full QR"
+                                      className="p-1.5 bg-black/5 hover:bg-black/10 rounded-lg text-[#1B1B19] transition cursor-pointer"
+                                    >
+                                      <QrCode className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenPaymentModal(member)}
+                                    title="Edit payment details"
+                                    className="p-1.5 bg-black/5 hover:bg-black/10 rounded-lg text-[#1B1B19] transition cursor-pointer"
+                                  >
+                                    <Pencil className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Account Number with 1-click copy */}
+                              <div className="flex items-center justify-between bg-black/5 px-2.5 py-1.5 rounded-xl text-xs font-mono">
+                                <span className="font-bold text-[#1B1B19] tracking-wider truncate">
+                                  {details.accountNumber || 'No account number'}
+                                </span>
+                                {details.accountNumber && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopyText(details.accountNumber, `Copied ${member}'s ${details.bankName} number!`)}
+                                    className="text-[10px] text-[#4A6CF7] hover:underline font-semibold flex items-center gap-1 shrink-0 ml-2 cursor-pointer"
+                                  >
+                                    <Copy className="w-3 h-3" />
+                                    <span>{copiedNotification?.includes(member) ? 'Copied!' : 'Copy'}</span>
+                                  </button>
+                                )}
+                              </div>
+
+                              {/* Notes badge if any */}
+                              {details.notes && (
+                                <p className="text-[10px] text-[#1B1B19]/60 italic truncate">
+                                  Note: {details.notes}
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Footer link to manage all members / unconfigured */}
+                      <div className="pt-1 flex items-center justify-between text-[11px] font-mono text-[#1B1B19]/60 px-1">
+                        <span>
+                          {unconfiguredMembersCount > 0 
+                            ? `${unconfiguredMembersCount} member${unconfiguredMembersCount === 1 ? '' : 's'} without payment info` 
+                            : 'All group members configured'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setShowPaymentDirectoryModal(true)}
+                          className="text-[#4A6CF7] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
+                        >
+                          <span>View all</span>
+                          <span>→</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
 
         {/* TAB 3: LEDGER */}
         {activeTab === 'ledger' && (
-          <div className="bg-white/70 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-sm space-y-3">
-            <div className="flex items-center justify-between border-b border-black/5 pb-2">
-              <div>
-                <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold">
-                  Expense History ({expenses.length})
+          <div className="bg-white/70 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-sm space-y-3.5 min-h-[500px]">
+            {/* Search and Sort Controls - Sticky Header */}
+            <div className="sticky top-2 z-20 bg-white/95 backdrop-blur-md p-2 -mx-2 rounded-2xl border border-black/5 shadow-xs space-y-1.5">
+              <div className="flex items-center gap-2">
+                {/* Search Bar */}
+                <div className="relative flex-1 min-w-0">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[#1B1B19]/40" />
+                  <input
+                    type="text"
+                    value={historySearch}
+                    onChange={(e) => setHistorySearch(e.target.value)}
+                    placeholder="Search expense, payer, item..."
+                    className="w-full bg-white/90 border border-black/10 pl-8 pr-7 py-2 rounded-xl text-xs font-mono text-[#1B1B19] focus:outline-none focus:ring-1 focus:ring-[#1B1B19] placeholder:text-black/30"
+                  />
+                  {historySearch && (
+                    <button
+                      type="button"
+                      onClick={() => setHistorySearch('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#1B1B19]/40 hover:text-[#1B1B19] text-xs font-mono cursor-pointer"
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
-                <p className="text-[10px] text-[#1B1B19]/40 font-mono mt-0.5">Tap any expense to edit or adjust split</p>
+
+                {/* Collapsed Sort Dropdown Beside Search Bar */}
+                <div className="relative shrink-0">
+                  <div className="flex items-center bg-white/90 border border-black/10 rounded-xl px-2.5 py-2 text-xs font-mono text-[#1B1B19] focus-within:ring-1 focus-within:ring-[#1B1B19] shadow-2xs">
+                    <ArrowUpDown className="w-3.5 h-3.5 text-[#1B1B19]/50 mr-1.5 shrink-0" />
+                    <select
+                      value={historySort}
+                      onChange={(e) => setHistorySort(e.target.value as any)}
+                      className="bg-transparent text-xs font-mono text-[#1B1B19] focus:outline-none cursor-pointer pr-1 font-medium"
+                    >
+                      <option value="latest">Latest</option>
+                      <option value="oldest">Oldest</option>
+                      <option value="highest">Highest ₱</option>
+                      <option value="lowest">Lowest ₱</option>
+                    </select>
+                  </div>
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={exportCSV}
-                className="bg-black/5 hover:bg-black/10 text-[#1B1B19] px-2.5 py-1 rounded-lg text-xs font-mono font-medium border border-black/5 flex items-center space-x-1"
-              >
-                <Download className="w-3 h-3" />
-                <span>CSV</span>
-              </button>
+
+              {/* Filter status banner */}
+              {historySearch.trim() && (
+                <div className="text-[10px] font-mono text-[#1B1B19]/60 flex items-center justify-between px-1 pt-0.5">
+                  <span>Showing {
+                    expenses.filter(exp => {
+                      const q = historySearch.toLowerCase().trim();
+                      const matchDesc = (exp.description || '').toLowerCase().includes(q);
+                      const matchPayer = (exp.paidBy || '').toLowerCase().includes(q);
+                      const matchCat = (exp.category || '').toLowerCase().includes(q);
+                      const matchItems = exp.itemsBreakdown?.some(it => (it.name || '').toLowerCase().includes(q));
+                      return matchDesc || matchPayer || matchCat || matchItems;
+                    }).length
+                  } matches</span>
+                  <button
+                    type="button"
+                    onClick={() => setHistorySearch('')}
+                    className="text-[#4A6CF7] hover:underline cursor-pointer"
+                  >
+                    Clear filter
+                  </button>
+                </div>
+              )}
             </div>
 
+            {/* Expense List */}
             {expenses.length === 0 ? (
-              <div className="text-center py-8 text-[#1B1B19]/50 text-xs">
+              <div className="text-center py-12 text-[#1B1B19]/50 text-xs font-mono">
                 <p>No expenses logged yet.</p>
               </div>
             ) : (
-              <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
-                {expenses.map((exp, idx) => (
-                  <div
-                    key={exp.id || idx}
-                    className="bg-white/70 hover:bg-white/95 p-3 rounded-2xl border border-black/5 hover:border-black/15 transition shadow-xs flex items-center justify-between text-xs group"
-                  >
-                    <div
-                      onClick={() => handleOpenEditModal(exp)}
-                      className="space-y-0.5 min-w-0 flex-1 cursor-pointer pr-2"
-                    >
-                      <div className="flex items-center space-x-1.5">
-                        <span className="font-bold text-[#1B1B19] text-sm truncate">{exp.description}</span>
-                        <span className="text-[9px] px-1.5 py-0.2 bg-black/5 text-[#1B1B19]/70 rounded-md font-mono shrink-0">
-                          {exp.splitMode === 'Single Payer (100% owed)' 
-                            ? '100% Owed' 
-                            : (exp.splitMode === 'Equal' || exp.splitMode === '50/50 Equal' || !exp.splitMode) && exp.splitMembers && exp.splitMembers.length > 0 && exp.splitMembers.length < availableUsers.length
-                              ? `Equal (${exp.splitMembers.length} of ${availableUsers.length})`
-                              : exp.splitMode}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-[#1B1B19]/70">
-                        Paid by <strong className="text-[#1B1B19]">{exp.paidBy}</strong>
-                        {exp.singleOwer ? <span> • Owed by <strong className="text-[#1B1B19]">{exp.singleOwer}</strong></span> : null}
-                        {(exp.splitMode === 'Equal' || exp.splitMode === '50/50 Equal' || !exp.splitMode) && exp.splitMembers && exp.splitMembers.length > 0 && exp.splitMembers.length < availableUsers.length ? (
-                          <span> • Split: <span className="font-medium text-[#1B1B19]">{exp.splitMembers.join(', ')}</span></span>
-                        ) : null}
-                      </p>
-                      <p className="text-[9px] text-[#1B1B19]/40 font-mono">
-                        {new Date(exp.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
-                      </p>
-                    </div>
+              <div className="space-y-2">
+                {expenses
+                  .filter(exp => {
+                    if (!historySearch.trim()) return true;
+                    const q = historySearch.toLowerCase().trim();
+                    const matchDesc = (exp.description || '').toLowerCase().includes(q);
+                    const matchPayer = (exp.paidBy || '').toLowerCase().includes(q);
+                    const matchCat = (exp.category || '').toLowerCase().includes(q);
+                    const matchItems = exp.itemsBreakdown?.some(it => (it.name || '').toLowerCase().includes(q));
+                    return matchDesc || matchPayer || matchCat || matchItems;
+                  })
+                  .sort((a, b) => {
+                    if (historySort === 'latest') {
+                      return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+                    }
+                    if (historySort === 'oldest') {
+                      return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+                    }
+                    if (historySort === 'highest') {
+                      return (Number(b.amount) || 0) - (Number(a.amount) || 0);
+                    }
+                    if (historySort === 'lowest') {
+                      return (Number(a.amount) || 0) - (Number(b.amount) || 0);
+                    }
+                    return 0;
+                  })
+                  .map((exp, idx) => {
+                    const isReceipt = Boolean(
+                      exp.isReceiptSplitter ||
+                      (exp.itemsBreakdown && exp.itemsBreakdown.length > 0) ||
+                      (exp.description && exp.description.startsWith('Receipt:'))
+                    );
 
-                    <div className="flex items-center space-x-2 shrink-0">
-                      <div className="text-right">
-                        <span className="font-bold font-mono text-[#1B1B19] text-sm">
-                          {exp.currency || '₱'}{formatAmount(Number(exp.amount))}
-                        </span>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => handleOpenEditModal(exp)}
-                        title="Edit expense"
-                        className="p-1.5 rounded-xl bg-black/5 hover:bg-[#1B1B19] text-[#1B1B19] hover:text-white transition flex items-center justify-center border border-black/5 hover:border-[#1B1B19] cursor-pointer"
+                    return (
+                      <div
+                        key={exp.id || idx}
+                        className="bg-white/80 hover:bg-white p-3.5 rounded-2xl border border-black/5 hover:border-black/15 transition shadow-xs flex items-center justify-between text-xs group"
                       >
-                        <Pencil className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                        <div
+                          onClick={() => handleOpenEditModal(exp)}
+                          className="space-y-1 min-w-0 flex-1 cursor-pointer pr-2"
+                        >
+                          <div className="flex items-center space-x-1.5 flex-wrap">
+                            <span className="font-bold text-[#1B1B19] text-sm truncate">{exp.description}</span>
+                            {isReceipt && (
+                              <span className="text-[9px] px-1.5 py-0.2 bg-emerald-100 text-emerald-800 rounded-md font-mono font-bold shrink-0 flex items-center gap-0.5">
+                                <Receipt className="w-2.5 h-2.5" />
+                                <span>Itemized Split</span>
+                              </span>
+                            )}
+                            <span className="text-[9px] px-1.5 py-0.2 bg-black/5 text-[#1B1B19]/70 rounded-md font-mono shrink-0">
+                              {exp.splitMode === 'Single Payer (100% owed)' 
+                                ? '100% Owed' 
+                                : (exp.splitMode === 'Equal' || exp.splitMode === '50/50 Equal' || !exp.splitMode) && exp.splitMembers && exp.splitMembers.length > 0 && exp.splitMembers.length < availableUsers.length
+                                  ? `Equal (${exp.splitMembers.length} of ${availableUsers.length})`
+                                  : exp.splitMode || 'Equal'}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-[#1B1B19]/70">
+                            Paid by <strong className="text-[#1B1B19]">{exp.paidBy}</strong>
+                            {exp.singleOwer ? <span> • Owed by <strong className="text-[#1B1B19]">{exp.singleOwer}</strong></span> : null}
+                            {(exp.splitMode === 'Equal' || exp.splitMode === '50/50 Equal' || !exp.splitMode) && exp.splitMembers && exp.splitMembers.length > 0 && exp.splitMembers.length < availableUsers.length ? (
+                              <span> • Split: <span className="font-medium text-[#1B1B19]">{exp.splitMembers.join(', ')}</span></span>
+                            ) : null}
+                            {exp.itemsBreakdown && exp.itemsBreakdown.length > 0 ? (
+                              <span className="text-[10px] text-[#1B1B19]/50 block font-mono">
+                                {exp.itemsBreakdown.length} dish{exp.itemsBreakdown.length === 1 ? '' : 'es'} itemized
+                              </span>
+                            ) : null}
+                          </p>
+                          <p className="text-[9px] text-[#1B1B19]/40 font-mono">
+                            {new Date(exp.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center space-x-2 shrink-0">
+                          <div className="text-right">
+                            <span className="font-bold font-mono text-[#1B1B19] text-sm">
+                              {exp.currency || '₱'}{formatAmount(Number(exp.amount))}
+                            </span>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditModal(exp)}
+                            title={isReceipt ? "Edit receipt split" : "Edit expense"}
+                            className="p-1.5 rounded-xl bg-black/5 hover:bg-[#1B1B19] text-[#1B1B19] hover:text-white transition flex items-center justify-center border border-black/5 hover:border-[#1B1B19] cursor-pointer"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
               </div>
             )}
           </div>
@@ -1596,35 +2288,37 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
 
       </div>
 
-      {/* Individual Settlement Modal */}
+      {/* Individual Settlement Full Page */}
       {selectedDebtToSettle && (
-        <div className="absolute inset-0 bg-black/40 backdrop-blur-md z-50 p-5 flex items-center justify-center">
-          <div className="bg-[#F8F7F4] border border-black/10 rounded-[32px] p-6 w-full max-w-sm space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-black/5 pb-2">
-              <div className="flex items-center space-x-2">
-                <div className="w-8 h-8 rounded-xl bg-[#1B1B19] text-white flex items-center justify-center text-sm shadow-md">
-                  🤝
-                </div>
-                <div>
-                  <h4 className="font-bold text-[#1B1B19] text-sm">
-                    Settle Individual Balance
-                  </h4>
-                  <p className="text-[10px] text-[#1B1B19]/60 font-mono">
-                    Record Member Payment
-                  </p>
-                </div>
+        <div className="fixed inset-0 bg-[#F8F7F4] z-50 flex flex-col animate-in fade-in duration-150">
+          {/* Top Header with (X) button */}
+          <header className="px-5 py-4 border-b border-black/5 bg-[#F8F7F4]/95 backdrop-blur-md flex items-center justify-between sticky top-0 z-20 shrink-0">
+            <div className="flex items-center space-x-2.5">
+              <div className="w-8 h-8 rounded-xl bg-[#1B1B19] text-white flex items-center justify-center text-sm shadow-md">
+                🤝
               </div>
-              <button
-                type="button"
-                onClick={() => setSelectedDebtToSettle(null)}
-                className="text-xs text-[#1B1B19]/50 hover:text-[#1B1B19] font-mono px-2 py-1"
-              >
-                ✕
-              </button>
+              <div>
+                <h4 className="font-bold text-[#1B1B19] text-sm">
+                  Settle Balance
+                </h4>
+                <p className="text-[10px] text-[#1B1B19]/60 font-mono">
+                  Record Member Payment
+                </p>
+              </div>
             </div>
+            <button
+              type="button"
+              onClick={() => setSelectedDebtToSettle(null)}
+              className="w-8 h-8 rounded-full bg-black/5 hover:bg-black/10 text-[#1B1B19]/70 hover:text-[#1B1B19] flex items-center justify-center transition cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </header>
 
+          {/* Scrollable Content */}
+          <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 max-w-xl mx-auto w-full">
             {/* Debt summary card */}
-            <div className="bg-white/80 p-3.5 rounded-2xl border border-black/5 space-y-1.5 text-xs">
+            <div className="bg-white/80 p-3.5 rounded-2xl border border-black/5 space-y-1.5 text-xs shadow-2xs">
               <div className="flex justify-between items-center text-[#1B1B19]/70">
                 <span>Payer:</span>
                 <span className="font-bold text-[#1B1B19]">{selectedDebtToSettle.debtor}</span>
@@ -1641,9 +2335,89 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
               </div>
             </div>
 
+            {/* Recipient's Bank / QR Code Details for seamless settlement */}
+            {(() => {
+              const creditorDetails = paymentDetails[selectedDebtToSettle.creditor];
+              if (creditorDetails) {
+                return (
+                  <div className="bg-emerald-50/80 border border-emerald-200/80 p-3 rounded-2xl space-y-2 text-xs">
+                    <div className="flex items-center justify-between border-b border-emerald-200/60 pb-1.5">
+                      <span className="font-mono text-[10px] uppercase font-bold text-emerald-900 flex items-center gap-1">
+                        <CreditCard className="w-3.5 h-3.5 text-emerald-700" />
+                        <span>Pay To: {selectedDebtToSettle.creditor} ({creditorDetails.bankName})</span>
+                      </span>
+                      <span className="text-[9px] font-mono px-1.5 py-0.2 bg-emerald-200/80 text-emerald-900 rounded font-bold">
+                        Account on File
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-[10px] text-emerald-800/70 font-mono">Account Name</p>
+                        <p className="font-bold text-emerald-950">{creditorDetails.accountName}</p>
+                      </div>
+                      {creditorDetails.qrCodeUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setViewingQrModal({
+                            memberName: selectedDebtToSettle.creditor,
+                            bankName: creditorDetails.bankName,
+                            accountName: creditorDetails.accountName,
+                            accountNumber: creditorDetails.accountNumber,
+                            qrCodeUrl: creditorDetails.qrCodeUrl!,
+                            notes: creditorDetails.notes
+                          })}
+                          className="flex items-center gap-1 bg-[#1B1B19] text-white px-2.5 py-1 rounded-lg text-[10px] font-mono font-medium shadow-xs hover:bg-black transition cursor-pointer"
+                        >
+                          <QrCode className="w-3 h-3 text-emerald-400" />
+                          <span>View QR</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {creditorDetails.accountNumber && (
+                      <div className="flex items-center justify-between bg-white/90 px-2.5 py-1.5 rounded-xl font-mono text-xs border border-emerald-200/60">
+                        <span className="font-bold text-emerald-950">{creditorDetails.accountNumber}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyText(creditorDetails.accountNumber, `Copied ${selectedDebtToSettle.creditor}'s account number!`)}
+                          className="text-[#4A6CF7] hover:underline font-semibold flex items-center gap-1 text-[10px] cursor-pointer"
+                        >
+                          <Copy className="w-3 h-3" />
+                          <span>{copiedNotification ? '✓ Copied' : 'Copy'}</span>
+                        </button>
+                      </div>
+                    )}
+
+                    {creditorDetails.notes && (
+                      <p className="text-[10px] text-emerald-900/70 italic">
+                        Note from {selectedDebtToSettle.creditor}: {creditorDetails.notes}
+                      </p>
+                    )}
+                  </div>
+                );
+              }
+
+              return (
+                <div className="bg-amber-50/70 border border-amber-200/80 p-2.5 rounded-2xl text-xs space-y-1.5">
+                  <p className="text-[11px] text-amber-900 font-medium">
+                    No payment details saved for <strong>{selectedDebtToSettle.creditor}</strong>.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenPaymentModal(selectedDebtToSettle.creditor)}
+                    className="text-[10px] font-mono text-amber-900 bg-amber-200/60 hover:bg-amber-200 px-2 py-1 rounded-lg font-bold transition flex items-center gap-1 cursor-pointer"
+                  >
+                    <PlusCircle className="w-3 h-3" />
+                    <span>+ Add {selectedDebtToSettle.creditor}'s QR / Bank Info</span>
+                  </button>
+                </div>
+              );
+            })()}
+
             {/* Amount input */}
             <div className="space-y-1">
-              <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60">
+              <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
                 Amount Paid ({selectedDebtToSettle.currency})
               </label>
               <input
@@ -1662,13 +2436,13 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                   }
                 }}
                 required
-                className="w-full bg-white border border-black/10 px-3.5 py-2 rounded-xl text-sm font-semibold font-mono text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20"
+                className="w-full bg-white border border-black/10 px-3.5 py-2.5 rounded-xl text-sm font-semibold font-mono text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20"
               />
             </div>
 
             {/* Payment Method Selector */}
             <div className="space-y-1.5">
-              <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60">
+              <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
                 Payment Method
               </label>
               <div className="flex flex-wrap gap-1.5">
@@ -1677,10 +2451,10 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                     key={m}
                     type="button"
                     onClick={() => setSettleMethod(m)}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition ${
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
                       settleMethod === m
-                        ? 'bg-[#1B1B19] text-white border-[#1B1B19] font-semibold'
-                        : 'bg-white/60 border-black/5 text-[#1B1B19]/70 hover:bg-white'
+                        ? 'bg-[#1B1B19] text-white border-[#1B1B19] shadow-xs'
+                        : 'bg-white border-black/10 text-[#1B1B19]/70 hover:bg-black/5'
                     }`}
                   >
                     {m}
@@ -1688,19 +2462,22 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                 ))}
               </div>
             </div>
+          </div>
 
-            <div className="grid grid-cols-2 gap-2 pt-1">
+          {/* Fixed Footer at the bottom */}
+          <div className="sticky bottom-0 bg-[#F8F7F4]/95 backdrop-blur-md border-t border-black/10 p-3.5 sm:p-4 shrink-0 z-20">
+            <div className="max-w-xl mx-auto grid grid-cols-2 gap-3">
               <button
                 type="button"
                 onClick={() => setSelectedDebtToSettle(null)}
-                className="w-full bg-black/5 hover:bg-black/10 text-[#1B1B19] py-2.5 rounded-xl font-semibold text-xs transition"
+                className="w-full bg-[#ECEBE7] hover:bg-[#E2E1DC] active:scale-[0.98] text-[#1B1B19] py-3.5 px-6 rounded-full font-semibold text-sm transition text-center cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleConfirmIndividualSettle}
-                className="w-full bg-[#1B1B19] hover:bg-black text-white py-2.5 rounded-xl font-semibold text-xs shadow-md transition"
+                className="w-full bg-[#1B1B19] hover:bg-black active:scale-[0.98] text-white py-3.5 px-6 rounded-full font-semibold text-sm shadow-sm transition text-center cursor-pointer"
               >
                 Confirm Settle
               </button>
@@ -1709,31 +2486,32 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         </div>
       )}
 
-      {/* Edit Expense Modal */}
+      {/* Edit Expense Full Page */}
       {editingExpense && (
-        <div className="absolute inset-0 bg-black/50 backdrop-blur-md z-50 p-4 flex items-center justify-center overflow-y-auto">
-          <div className="bg-[#F8F7F4] border border-black/10 rounded-[32px] p-5 w-full max-w-sm max-h-[90vh] overflow-y-auto space-y-4 shadow-2xl my-auto">
-            {/* Header */}
-            <div className="flex items-center justify-between border-b border-black/5 pb-2.5">
-              <div className="flex items-center space-x-2">
-                <div className="w-8 h-8 rounded-xl bg-[#1B1B19] text-white flex items-center justify-center text-xs shadow-md">
-                  <Pencil className="w-4 h-4" />
-                </div>
-                <div>
-                  <h4 className="font-bold text-[#1B1B19] text-sm">Edit Expense</h4>
-                  <p className="text-[10px] text-[#1B1B19]/60 font-mono">Update details or adjust split</p>
-                </div>
+        <div className="fixed inset-0 bg-[#F8F7F4] z-50 flex flex-col animate-in fade-in duration-150">
+          {/* Top Header with (X) button */}
+          <header className="px-5 py-4 border-b border-black/5 bg-[#F8F7F4]/95 backdrop-blur-md flex items-center justify-between sticky top-0 z-20 shrink-0">
+            <div className="flex items-center space-x-2.5">
+              <div className="w-8 h-8 rounded-xl bg-[#1B1B19] text-white flex items-center justify-center text-xs shadow-md">
+                <Pencil className="w-4 h-4" />
               </div>
-              <button
-                type="button"
-                onClick={() => setEditingExpense(null)}
-                className="text-[#1B1B19]/50 hover:text-[#1B1B19] p-1 rounded-lg transition font-mono text-xs"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div>
+                <h4 className="font-bold text-[#1B1B19] text-sm">Edit Expense</h4>
+                <p className="text-[10px] text-[#1B1B19]/60 font-mono">Update details or adjust split</p>
+              </div>
             </div>
+            <button
+              type="button"
+              onClick={() => setEditingExpense(null)}
+              className="w-8 h-8 rounded-full bg-black/5 hover:bg-black/10 text-[#1B1B19]/70 hover:text-[#1B1B19] flex items-center justify-center transition cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </header>
 
-            <form onSubmit={handleSaveEditedExpense} className="space-y-3.5">
+          <form onSubmit={handleSaveEditedExpense} className="flex-1 flex flex-col min-h-0">
+            {/* Scrollable Content */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 max-w-xl mx-auto w-full">
               {/* Description Field */}
               <div className="space-y-1">
                 <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
@@ -2088,195 +2866,27 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                   </div>
                 )}
               </div>
+            </div>
 
-              {/* Bottom Action Buttons */}
-              <div className="grid grid-cols-2 gap-2 pt-1">
+            {/* Fixed Footer at the bottom */}
+            <div className="sticky bottom-0 bg-[#F8F7F4]/95 backdrop-blur-md border-t border-black/10 p-3.5 sm:p-4 shrink-0 z-20">
+              <div className="max-w-xl mx-auto grid grid-cols-2 gap-3">
                 <button
                   type="button"
                   onClick={() => setEditingExpense(null)}
-                  className="w-full bg-black/5 hover:bg-black/10 text-[#1B1B19] py-2.5 rounded-xl font-semibold text-xs transition"
+                  className="w-full bg-[#ECEBE7] hover:bg-[#E2E1DC] active:scale-[0.98] text-[#1B1B19] py-3.5 px-6 rounded-full font-semibold text-sm transition text-center cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="w-full bg-[#1B1B19] hover:bg-black text-white py-2.5 rounded-xl font-semibold text-xs shadow-md transition"
+                  className="w-full bg-[#1B1B19] hover:bg-black active:scale-[0.98] text-white py-3.5 px-6 rounded-full font-semibold text-sm shadow-sm transition text-center cursor-pointer"
                 >
                   Save Changes
                 </button>
               </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Google Apps Script & Sync Settings Modal */}
-      {showSettingsModal && (
-        <div className="absolute inset-0 bg-black/40 backdrop-blur-md z-50 p-4 flex items-center justify-center">
-          <div className="bg-[#F8F7F4] border border-black/10 rounded-[32px] p-5 w-full max-w-sm space-y-3.5 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-black/5 pb-2.5">
-              <div className="flex items-center space-x-2">
-                <div className="w-7 h-7 rounded-lg bg-[#4A6CF7]/10 text-[#4A6CF7] flex items-center justify-center text-sm font-bold">
-                  ⚙️
-                </div>
-                <div>
-                  <h4 className="font-bold text-[#1B1B19] text-sm leading-tight">Google Sheets Sync</h4>
-                  <p className="text-[10px] text-[#1B1B19]/60 font-mono">Backend Connection Status</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowSettingsModal(false);
-                  setTestResult(null);
-                }}
-                className="text-xs text-[#1B1B19]/50 hover:text-[#1B1B19] font-mono px-2 py-1"
-              >
-                ✕
-              </button>
             </div>
-
-            {/* Status indicator pill */}
-            <div className={`p-3 rounded-2xl border text-xs font-mono flex items-start space-x-2.5 ${
-              isOnlineGas 
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-900' 
-                : 'bg-amber-50 border-amber-200 text-amber-900'
-            }`}>
-              <span className={`w-2.5 h-2.5 rounded-full mt-0.5 shrink-0 ${isOnlineGas ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`}></span>
-              <div className="space-y-0.5">
-                <p className="font-bold">{isOnlineGas ? '🟢 Live Sheet Connected' : '🟡 Sync Pending / Blocked'}</p>
-                <p className="text-[10px] leading-tight opacity-80">
-                  {isOnlineGas 
-                    ? 'All members and expenses in your Google Sheet are syncing automatically.' 
-                    : 'Google returned a login redirect. Verify "Execute as: Me" and "Who has access: Anyone".'}
-                </p>
-              </div>
-            </div>
-
-            {/* Web App URL field */}
-            <div className="space-y-1">
-              <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60">
-                Apps Script Web App URL
-              </label>
-              <input
-                type="url"
-                value={inputGasUrl}
-                onChange={e => setInputGasUrl(e.target.value)}
-                placeholder="https://script.google.com/macros/s/.../exec"
-                className="w-full bg-white border border-black/10 px-3 py-2 rounded-xl text-xs font-mono text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20"
-              />
-            </div>
-
-            {/* Test result message if any */}
-            {testResult && (
-              <div className={`p-2.5 rounded-xl text-xs font-mono leading-tight ${
-                testResult.status === 'success' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
-              }`}>
-                {testResult.message}
-              </div>
-            )}
-
-            {/* Deployment Instructions Checklist */}
-            <div className="bg-white/60 p-3 rounded-2xl border border-black/5 text-[11px] space-y-1.5 text-[#1B1B19]/80">
-              <p className="font-bold font-mono text-[10px] uppercase text-[#1B1B19]">Troubleshooting Checklist:</p>
-              <p className="leading-snug">• <strong>Deploy New Version</strong>: In Apps Script, click <code>Deploy &gt; Manage deployments &gt; Edit (pencil) &gt; Version: New version &gt; Deploy</code>.</p>
-              <p className="leading-snug">• <strong>Bot Privacy (@BotFather)</strong>: To receive <code>/start</code> in groups, send <code>/setprivacy</code> to @BotFather and choose <code>Disable</code>, or promote the bot to Admin.</p>
-              <p className="leading-snug">• <strong>Execute as</strong>: <code>Me</code> | <strong>Who has access</strong>: <code>Anyone</code>.</p>
-            </div>
-
-            {/* Sync Webhook Button */}
-            <button
-              type="button"
-              disabled={isTestingUrl}
-              onClick={async () => {
-                setIsTestingUrl(true);
-                setTestResult(null);
-                try {
-                  const cleanUrl = inputGasUrl.trim();
-                  if (!cleanUrl.startsWith('http')) {
-                    setTestResult({ status: 'error', message: 'Enter a valid Apps Script Web App URL first.' });
-                    setIsTestingUrl(false);
-                    return;
-                  }
-                  const res = await fetch(`${cleanUrl}${cleanUrl.includes('?') ? '&' : '?'}action=set_webhook`);
-                  const json = await res.json();
-                  if (json.result && json.result.ok) {
-                    setTestResult({ status: 'success', message: '✅ Webhook successfully connected to Telegram! Bot will now respond to commands.' });
-                  } else {
-                    setTestResult({ status: 'error', message: `Webhook registration response: ${JSON.stringify(json.result || json)}` });
-                  }
-                } catch (err: any) {
-                  setTestResult({ status: 'error', message: `Webhook registration failed: ${err.message}` });
-                } finally {
-                  setIsTestingUrl(false);
-                }
-              }}
-              className="w-full bg-[#1B1B19] hover:bg-black text-white py-2 rounded-xl font-semibold text-xs transition flex items-center justify-center space-x-1.5"
-            >
-              <Send className="w-3 h-3" />
-              <span>Register / Refresh Telegram Webhook</span>
-            </button>
-
-            <div className="grid grid-cols-2 gap-2 pt-1">
-              <button
-                type="button"
-                disabled={isTestingUrl}
-                onClick={async () => {
-                  setIsTestingUrl(true);
-                  setTestResult(null);
-                  try {
-                    const cleanUrl = inputGasUrl.trim();
-                    if (!cleanUrl.startsWith('http')) {
-                      setTestResult({ status: 'error', message: 'URL must start with https://' });
-                      setIsTestingUrl(false);
-                      return;
-                    }
-                    const res = await fetch(`${cleanUrl}${cleanUrl.includes('?') ? '&' : '?'}action=get_data`);
-                    const text = await res.text();
-                    if (text.includes('accounts.google.com') || text.startsWith('<')) {
-                      setTestResult({
-                        status: 'error',
-                        message: 'Google Sign-In blocked this URL. In Apps Script, set "Execute as: Me" and "Who has access: Anyone".'
-                      });
-                    } else {
-                      const json = JSON.parse(text);
-                      if (json.status === 'success') {
-                        setGasUrl(cleanUrl);
-                        setTestResult({
-                          status: 'success',
-                          message: `Connected! Found ${(json.data?.users || []).length} users and ${(json.data?.expenses || []).length} expenses.`
-                        });
-                        setTimeout(() => {
-                          setShowSettingsModal(false);
-                          window.location.reload();
-                        }, 1200);
-                      } else {
-                        setTestResult({ status: 'error', message: json.message || 'Error fetching data' });
-                      }
-                    }
-                  } catch (err: any) {
-                    setTestResult({ status: 'error', message: `Fetch failed: ${err.message}` });
-                  } finally {
-                    setIsTestingUrl(false);
-                  }
-                }}
-                className="w-full bg-[#4A6CF7] hover:bg-[#3B5BE3] text-white py-2.5 rounded-xl font-semibold text-xs transition shadow-sm flex items-center justify-center space-x-1.5"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isTestingUrl ? 'animate-spin' : ''}`} />
-                <span>{isTestingUrl ? 'Testing...' : 'Save & Test'}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowSettingsModal(false);
-                  setTestResult(null);
-                }}
-                className="w-full bg-black/5 hover:bg-black/10 text-[#1B1B19] py-2.5 rounded-xl font-semibold text-xs transition"
-              >
-                Close
-              </button>
-            </div>
-          </div>
+          </form>
         </div>
       )}
 
@@ -2536,6 +3146,795 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
           <span className="font-bold leading-none shrink-0">HISTORY</span>
         </button>
       </footer>
+
+      {/* Gemini AI OCR Receipt Scanner Modal */}
+      <ReceiptScannerModal
+        isOpen={showScannerModal}
+        onClose={() => setShowScannerModal(false)}
+        onApplyReceipt={handleApplyScannedReceipt}
+        onOpenItemizedSplitter={(data) => {
+          setItemizedInitialData(data);
+          setActiveTab('new');
+          setLogSubTab('splitter');
+          setShowScannerModal(false);
+        }}
+        groupMembers={availableUsers}
+        activeGasUrl={gasUrl}
+        activeChatId={chatId}
+      />
+
+      {/* Edit Itemized Receipt Splitter Modal */}
+      {editingReceiptExpense && (
+        <ItemizedReceiptSplitter
+          isOpenModal={true}
+          isEditing={true}
+          submitButtonLabel={`Update Receipt Split (${editingReceiptExpense.currency || '₱'}${formatAmount(editingReceiptExpense.amount)})`}
+          onCloseModal={() => setEditingReceiptExpense(null)}
+          groupMembers={availableUsers}
+          defaultPayer={editingReceiptExpense.paidBy || activeUser}
+          defaultCurrency={editingReceiptExpense.currency || '₱'}
+          initialReceiptData={{
+            merchant: editingReceiptExpense.merchant || editingReceiptExpense.description.replace(/^Receipt:\s*/, ''),
+            total: Number(editingReceiptExpense.amount) || 0,
+            currency: editingReceiptExpense.currency || '₱',
+            category: editingReceiptExpense.category || 'Food & Drink',
+            tax: Number(editingReceiptExpense.tax) || 0,
+            tip: Number(editingReceiptExpense.tip) || 0,
+            discount: Number(editingReceiptExpense.discount) || 0,
+            items: (editingReceiptExpense.itemsBreakdown && editingReceiptExpense.itemsBreakdown.length > 0)
+              ? editingReceiptExpense.itemsBreakdown.map(it => ({
+                  name: it.name,
+                  price: Number(it.price) || 0,
+                  quantity: Number(it.quantity) || 1,
+                  assignedTo: it.assignedTo || []
+                }))
+              : [{
+                  name: editingReceiptExpense.description,
+                  price: Number(editingReceiptExpense.amount) || 0,
+                  quantity: 1,
+                  assignedTo: editingReceiptExpense.splitMembers && editingReceiptExpense.splitMembers.length > 0
+                    ? editingReceiptExpense.splitMembers
+                    : availableUsers
+                }]
+          }}
+          onSaveToLedger={handleSaveEditedReceipt}
+          gasUrl={gasUrl}
+        />
+      )}
+
+      {/* Member Payment Directory Full Page */}
+      {showPaymentDirectoryModal && (
+        <div className="fixed inset-0 bg-[#F8F7F4] z-50 flex flex-col animate-in fade-in duration-150 text-[#1B1B19]">
+          {/* Top Header with (X) button */}
+          <header className="px-5 py-4 border-b border-black/5 bg-[#F8F7F4]/95 backdrop-blur-md flex items-center justify-between sticky top-0 z-20 shrink-0">
+            <div className="flex items-center space-x-2.5">
+              <div className="w-8 h-8 rounded-xl bg-[#1B1B19] text-white flex items-center justify-center text-xs shadow-md">
+                <QrCode className="w-4 h-4 text-emerald-400" />
+              </div>
+              <div>
+                <h4 className="font-bold text-[#1B1B19] text-sm">Payment Methods Directory</h4>
+                <p className="text-[10px] text-[#1B1B19]/60 font-mono">Manage accounts & QR codes for all members</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowPaymentDirectoryModal(false)}
+              className="w-8 h-8 rounded-full bg-black/5 hover:bg-black/10 text-[#1B1B19]/70 hover:text-[#1B1B19] flex items-center justify-center transition cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </header>
+
+          <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 max-w-xl mx-auto w-full">
+            {/* Quick Action bar for active user */}
+            <div className="bg-white/80 p-3 rounded-2xl border border-black/5 flex items-center justify-between gap-2 shadow-2xs">
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-[#1B1B19]">Your Payment Details ({activeUser})</p>
+                <p className="text-[10px] text-[#1B1B19]/50 font-mono truncate">
+                  {paymentDetails[activeUser]
+                    ? `${paymentDetails[activeUser]?.bankName} • ${paymentDetails[activeUser]?.accountNumber || 'Configured'}`
+                    : 'Not configured yet — add your GCash/Bank'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  handleOpenPaymentModal(activeUser);
+                }}
+                className="bg-[#1B1B19] hover:bg-black text-white px-3 py-1.5 rounded-xl text-xs font-mono font-semibold shrink-0 transition cursor-pointer shadow-xs"
+              >
+                {paymentDetails[activeUser] ? 'Edit Mine' : '+ Add Mine'}
+              </button>
+            </div>
+
+            {/* Section 1: Configured Members */}
+            {(() => {
+              const configured = availableUsers.filter(u => Boolean(paymentDetails[u]));
+              const unconfigured = availableUsers.filter(u => !paymentDetails[u]);
+
+              return (
+                <div className="space-y-3">
+                  {configured.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold px-1">
+                        <span>Configured Accounts ({configured.length})</span>
+                      </div>
+                      <div className="space-y-2">
+                        {configured.map(member => {
+                          const details = paymentDetails[member];
+                          const isCurrent = member === activeUser;
+
+                          return (
+                            <div
+                              key={member}
+                              className="p-3 rounded-2xl border border-black/5 bg-white space-y-2 shadow-2xs"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-bold text-xs text-[#1B1B19]">{member}</span>
+                                    {isCurrent && (
+                                      <span className="text-[8px] font-mono px-1 py-0.2 bg-[#4A6CF7]/10 text-[#4A6CF7] rounded font-semibold">
+                                        You
+                                      </span>
+                                    )}
+                                    <span className="text-[9px] font-mono px-1.5 py-0.2 bg-[#1B1B19] text-white rounded font-bold">
+                                      {details.bankName}
+                                    </span>
+                                  </div>
+                                  <p className="text-[11px] text-[#1B1B19]/70 font-mono mt-0.5 truncate">
+                                    {details.accountName}
+                                  </p>
+                                </div>
+
+                                <div className="flex items-center gap-1 shrink-0">
+                                  {details.qrCodeUrl && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setViewingQrModal({
+                                        memberName: member,
+                                        bankName: details.bankName,
+                                        accountName: details.accountName,
+                                        accountNumber: details.accountNumber,
+                                        qrCodeUrl: details.qrCodeUrl!,
+                                        notes: details.notes
+                                      })}
+                                      title="View full QR"
+                                      className="p-1.5 bg-black/5 hover:bg-black/10 rounded-lg text-[#1B1B19] transition cursor-pointer"
+                                    >
+                                      <QrCode className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenPaymentModal(member)}
+                                    title="Edit payment details"
+                                    className="p-1.5 bg-black/5 hover:bg-black/10 rounded-lg text-[#1B1B19] transition cursor-pointer"
+                                  >
+                                    <Pencil className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+
+                              {details.accountNumber && (
+                                <div className="flex items-center justify-between bg-black/5 px-2.5 py-1.5 rounded-xl text-xs font-mono">
+                                  <span className="font-bold text-[#1B1B19] tracking-wider truncate">
+                                    {details.accountNumber}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopyText(details.accountNumber, `Copied ${member}'s ${details.bankName} number!`)}
+                                    className="text-[10px] text-[#4A6CF7] hover:underline font-semibold flex items-center gap-1 shrink-0 ml-2 cursor-pointer"
+                                  >
+                                    <Copy className="w-3 h-3" />
+                                    <span>Copy</span>
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Section 2: Members Without Info Yet (Clean Inner Page list) */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold px-1">
+                      <span>No Info Added Yet ({unconfigured.length})</span>
+                    </div>
+
+                    {unconfigured.length === 0 ? (
+                      <div className="p-3 rounded-2xl bg-emerald-50/60 border border-emerald-200/60 text-center">
+                        <p className="text-xs font-semibold text-emerald-800">🎉 All members have payment info configured!</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {unconfigured.map(member => {
+                          const isCurrent = member === activeUser;
+
+                          return (
+                            <div
+                              key={member}
+                              className="p-2.5 rounded-2xl border border-dashed border-black/10 bg-white/60 hover:bg-white flex items-center justify-between gap-2 transition"
+                            >
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-semibold text-xs text-[#1B1B19] truncate">{member}</span>
+                                  {isCurrent && (
+                                    <span className="text-[8px] font-mono px-1 py-0.2 bg-[#4A6CF7]/10 text-[#4A6CF7] rounded font-semibold">
+                                      You
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[10px] text-[#1B1B19]/40 font-mono">No payment info on file</p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenPaymentModal(member)}
+                                className="text-[11px] font-mono px-2.5 py-1 bg-black/5 hover:bg-black/10 text-[#1B1B19] font-medium rounded-xl transition shrink-0 cursor-pointer"
+                              >
+                                + Add Info
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
+          </div>
+
+          {/* Fixed Footer at the bottom */}
+          <div className="sticky bottom-0 bg-[#F8F7F4]/95 backdrop-blur-md border-t border-black/10 p-3.5 sm:p-4 shrink-0 z-20">
+            <div className="max-w-xl mx-auto">
+              <button
+                type="button"
+                onClick={() => setShowPaymentDirectoryModal(false)}
+                className="w-full bg-[#1B1B19] hover:bg-black active:scale-[0.98] text-white py-3.5 px-6 rounded-full font-semibold text-sm shadow-sm transition text-center cursor-pointer"
+              >
+                Close Directory
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Member Payment Details & QR Code Edit Full Page */}
+      {showPaymentModal && (
+        <div className="fixed inset-0 bg-[#F8F7F4] z-50 flex flex-col animate-in fade-in duration-150">
+          {/* Top Header with (X) button */}
+          <header className="px-5 py-4 border-b border-black/5 bg-[#F8F7F4]/95 backdrop-blur-md flex items-center justify-between sticky top-0 z-20 shrink-0">
+            <div className="flex items-center space-x-2.5">
+              <div className="w-8 h-8 rounded-xl bg-[#1B1B19] text-white flex items-center justify-center text-xs shadow-md">
+                <QrCode className="w-4 h-4 text-emerald-400" />
+              </div>
+              <div>
+                <h4 className="font-bold text-[#1B1B19] text-sm">Payment Details</h4>
+                <p className="text-[10px] text-[#1B1B19]/60 font-mono">For member: {paymentTargetMember}</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowPaymentModal(false)}
+              className="w-8 h-8 rounded-full bg-black/5 hover:bg-black/10 text-[#1B1B19]/70 hover:text-[#1B1B19] flex items-center justify-center transition cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </header>
+
+          <form onSubmit={handleSavePaymentForm} className="flex-1 flex flex-col min-h-0">
+            {/* Scrollable Form Content */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 max-w-xl mx-auto w-full">
+              {/* Member Target Selector */}
+              <div className="space-y-1">
+                <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
+                  Member
+                </label>
+                <select
+                  value={paymentTargetMember}
+                  onChange={(e) => {
+                    const chosen = e.target.value;
+                    setPaymentTargetMember(chosen);
+                    const existing = paymentDetails[chosen];
+                    if (existing) {
+                      setPaymentBankName(existing.bankName || 'GCash');
+                      setPaymentCustomBank(existing.bankName && !['GCash', 'Maya', 'BPI', 'BDO', 'UnionBank', 'GoTyme', 'SeaBank', 'Cash'].includes(existing.bankName) ? existing.bankName : '');
+                      setPaymentAccountName(existing.accountName || '');
+                      setPaymentAccountNumber(existing.accountNumber || '');
+                      setPaymentQrCodeUrl(existing.qrCodeUrl || '');
+                      setPaymentNotes(existing.notes || '');
+                    } else {
+                      setPaymentBankName('GCash');
+                      setPaymentCustomBank('');
+                      setPaymentAccountName(chosen);
+                      setPaymentAccountNumber('');
+                      setPaymentQrCodeUrl('');
+                      setPaymentNotes('');
+                    }
+                  }}
+                  className="w-full bg-white border border-black/10 px-3.5 py-2.5 rounded-xl text-xs text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20 font-medium cursor-pointer shadow-2xs"
+                >
+                  {availableUsers.map(u => (
+                    <option key={u} value={u}>
+                      {u} {u === activeUser ? '(You)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Payment Channel / Bank */}
+              <div className="space-y-1.5">
+                <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
+                  Payment Channel / Bank
+                </label>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {['GCash', 'Maya', 'BPI', 'BDO', 'UnionBank', 'GoTyme', 'SeaBank', 'Other'].map(b => (
+                    <button
+                      key={b}
+                      type="button"
+                      onClick={() => setPaymentBankName(b)}
+                      className={`p-2.5 rounded-xl text-xs font-semibold border transition text-center cursor-pointer ${
+                        paymentBankName === b
+                          ? 'bg-[#1B1B19] text-white border-[#1B1B19] shadow-xs'
+                          : 'bg-white/80 border-black/5 text-[#1B1B19]/70 hover:bg-white'
+                      }`}
+                    >
+                      {b}
+                    </button>
+                  ))}
+                </div>
+                {paymentBankName === 'Other' && (
+                  <input
+                    type="text"
+                    value={paymentCustomBank}
+                    onChange={e => setPaymentCustomBank(e.target.value)}
+                    placeholder="Specify bank or wallet name (e.g. PayPal, Wise)"
+                    className="w-full bg-white border border-black/10 px-3.5 py-2.5 rounded-xl text-xs text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20 mt-1 shadow-2xs"
+                  />
+                )}
+              </div>
+
+              {/* Account Name */}
+              <div className="space-y-1">
+                <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
+                  Account Name
+                </label>
+                <input
+                  type="text"
+                  value={paymentAccountName}
+                  onChange={e => setPaymentAccountName(e.target.value)}
+                  placeholder="e.g. Juan Dela Cruz"
+                  required
+                  className="w-full bg-white border border-black/10 px-3.5 py-2.5 rounded-xl text-xs text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20 font-medium shadow-2xs"
+                />
+              </div>
+
+              {/* Account Number / Mobile */}
+              <div className="space-y-1">
+                <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
+                  Account Number / Mobile Number
+                </label>
+                <input
+                  type="text"
+                  value={paymentAccountNumber}
+                  onChange={e => setPaymentAccountNumber(e.target.value)}
+                  placeholder="e.g. 0917 123 4567 or 1234-5678-90"
+                  className="w-full bg-white border border-black/10 px-3.5 py-2.5 rounded-xl text-xs font-mono text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20 shadow-2xs"
+                />
+              </div>
+
+              {/* QR Code Upload */}
+              <div className="space-y-1.5">
+                <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold flex items-center justify-between">
+                  <span>QR Code Image (Optional)</span>
+                  {paymentQrCodeUrl && (
+                    <button
+                      type="button"
+                      onClick={() => setPaymentQrCodeUrl('')}
+                      className="text-rose-500 hover:underline text-[10px] lowercase font-normal"
+                    >
+                      remove qr
+                    </button>
+                  )}
+                </label>
+                
+                {paymentQrCodeUrl ? (
+                  <div className="bg-white p-3 rounded-2xl border border-black/10 flex items-center gap-3 shadow-2xs">
+                    <img
+                      src={paymentQrCodeUrl}
+                      alt="Uploaded QR Code"
+                      className="w-16 h-16 object-contain rounded-lg border border-black/5 bg-black/5"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <span className="text-xs font-semibold text-emerald-700 block">✓ QR Image Attached</span>
+                      <p className="text-[10px] text-[#1B1B19]/50 font-mono">Members can view & scan full-screen</p>
+                      <label className="mt-1 inline-block text-xs text-[#4A6CF7] hover:underline font-semibold cursor-pointer">
+                        Replace QR
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleQrFileUpload}
+                          className="hidden"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                ) : (
+                  <label className="w-full border-2 border-dashed border-black/15 hover:border-black/30 rounded-2xl p-5 flex flex-col items-center justify-center gap-1.5 cursor-pointer bg-white/50 hover:bg-white transition">
+                    <QrCode className="w-6 h-6 text-[#1B1B19]/40" />
+                    <span className="text-xs font-semibold text-[#1B1B19]">Upload QR Code Image</span>
+                    <span className="text-[10px] text-[#1B1B19]/50 font-mono">GCash / Maya / Bank QR photo</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleQrFileUpload}
+                      className="hidden"
+                    />
+                  </label>
+                )}
+              </div>
+
+              {/* Optional Notes */}
+              <div className="space-y-1">
+                <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
+                  Notes / Payment Instructions (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={paymentNotes}
+                  onChange={e => setPaymentNotes(e.target.value)}
+                  placeholder="e.g. Please put SplitNest in reference note"
+                  className="w-full bg-white border border-black/10 px-3.5 py-2.5 rounded-xl text-xs text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20 shadow-2xs"
+                />
+              </div>
+
+              {paymentDetails[paymentTargetMember] && (
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => handleRemovePaymentDetails(paymentTargetMember)}
+                    className="w-full bg-rose-50 hover:bg-rose-100/70 text-rose-700 border border-rose-200/80 py-2.5 rounded-2xl font-medium text-xs transition cursor-pointer"
+                  >
+                    Remove Details for {paymentTargetMember}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Fixed Footer at the bottom */}
+            <div className="sticky bottom-0 bg-[#F8F7F4]/95 backdrop-blur-md border-t border-black/10 p-3.5 sm:p-4 shrink-0 z-20">
+              <div className="max-w-xl mx-auto grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowPaymentModal(false)}
+                  className="w-full bg-[#ECEBE7] hover:bg-[#E2E1DC] active:scale-[0.98] text-[#1B1B19] py-3.5 px-6 rounded-full font-semibold text-sm transition text-center cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="w-full bg-[#1B1B19] hover:bg-black active:scale-[0.98] text-white py-3.5 px-6 rounded-full font-semibold text-sm shadow-sm transition text-center cursor-pointer"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* QR Code Full Viewer Modal */}
+      {viewingQrModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-md z-50 p-4 flex items-center justify-center animate-in fade-in">
+          <div className="bg-[#F8F7F4] border border-black/10 rounded-[32px] p-6 w-full max-w-sm space-y-4 shadow-2xl text-center">
+            <div className="flex items-center justify-between border-b border-black/5 pb-2">
+              <div className="flex items-center space-x-2 text-left">
+                <div className="w-8 h-8 rounded-xl bg-[#1B1B19] text-white flex items-center justify-center text-xs shadow-md">
+                  <QrCode className="w-4 h-4 text-emerald-400" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-[#1B1B19] text-sm">{viewingQrModal.memberName}'s {viewingQrModal.bankName} QR</h4>
+                  <p className="text-[10px] text-[#1B1B19]/60 font-mono">{viewingQrModal.accountName}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setViewingQrModal(null)}
+                className="w-7 h-7 rounded-full bg-black/5 hover:bg-black/10 text-[#1B1B19]/60 hover:text-[#1B1B19] flex items-center justify-center transition cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* QR Code Display Canvas */}
+            <div className="bg-white p-4 rounded-2xl border border-black/10 shadow-inner flex flex-col items-center justify-center">
+              <img
+                src={viewingQrModal.qrCodeUrl}
+                alt={`${viewingQrModal.memberName} QR`}
+                className="max-h-64 w-auto object-contain rounded-xl"
+              />
+            </div>
+
+            {/* Details & Copy */}
+            <div className="bg-white/80 p-3 rounded-2xl border border-black/5 space-y-1 text-left text-xs font-mono">
+              <div className="flex justify-between items-center text-[#1B1B19]">
+                <span className="text-[#1B1B19]/60">Bank / Channel:</span>
+                <span className="font-bold">{viewingQrModal.bankName}</span>
+              </div>
+              <div className="flex justify-between items-center text-[#1B1B19]">
+                <span className="text-[#1B1B19]/60">Name:</span>
+                <span className="font-bold truncate max-w-[170px]">{viewingQrModal.accountName}</span>
+              </div>
+              {viewingQrModal.accountNumber && (
+                <div className="flex justify-between items-center text-[#1B1B19] pt-1 border-t border-black/5">
+                  <span className="text-[#1B1B19]/60">Account #:</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-bold">{viewingQrModal.accountNumber}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyText(viewingQrModal.accountNumber, 'Account number copied!')}
+                      className="text-[#4A6CF7] hover:underline font-semibold text-[10px] flex items-center gap-0.5 cursor-pointer"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>Copy</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+              {viewingQrModal.notes && (
+                <p className="text-[10px] text-[#1B1B19]/60 italic pt-1">
+                  Note: {viewingQrModal.notes}
+                </p>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setViewingQrModal(null)}
+              className="w-full bg-[#1B1B19] hover:bg-black text-white py-2.5 rounded-xl font-semibold text-xs transition cursor-pointer"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ┌────────────────────────────────────────────────────────┐
+          │ 💸 ALL SETTLEMENTS FULL PAGE VIEW (WITH WHO PAID WHO FILTER) │
+          └────────────────────────────────────────────────────────┘ */}
+      {showAllSettlementsModal && (() => {
+        const filteredSettlements = settlements.filter(s => {
+          // Filter by payer
+          if (settlementFilterPayer !== 'all' && s.payer !== settlementFilterPayer) {
+            return false;
+          }
+          // Filter by receiver
+          if (settlementFilterReceiver !== 'all' && s.receiver !== settlementFilterReceiver) {
+            return false;
+          }
+          // Search by text
+          if (settlementSearch.trim()) {
+            const query = settlementSearch.toLowerCase().trim();
+            const payerMatch = s.payer.toLowerCase().includes(query);
+            const receiverMatch = s.receiver.toLowerCase().includes(query);
+            const methodMatch = s.method?.toLowerCase().includes(query);
+            const amountMatch = String(s.amount).includes(query);
+            return payerMatch || receiverMatch || methodMatch || amountMatch;
+          }
+          return true;
+        });
+
+        const totalFilteredSettled = filteredSettlements.reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+
+        return (
+          <div className="fixed inset-0 bg-[#F8F7F4] z-50 flex flex-col animate-in fade-in duration-150 overflow-hidden">
+            {/* Top Header */}
+            <header className="px-5 py-4 border-b border-black/5 bg-[#F8F7F4]/95 backdrop-blur-md flex items-center justify-between sticky top-0 z-20 shrink-0">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-8 h-8 rounded-xl bg-[#1B1B19] text-white flex items-center justify-center text-sm shadow-md">
+                  <History className="w-4 h-4 text-emerald-400" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-[#1B1B19] text-sm">Settlement History</h4>
+                  <p className="text-[10px] text-[#1B1B19]/60 font-mono">
+                    {filteredSettlements.length} of {settlements.length} settlement{settlements.length === 1 ? '' : 's'} shown
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAllSettlementsModal(false)}
+                className="w-8 h-8 rounded-full bg-black/5 hover:bg-black/10 text-[#1B1B19]/70 hover:text-[#1B1B19] flex items-center justify-center transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </header>
+
+            {/* Main Content Area */}
+            <div className="flex-1 overflow-y-auto flex flex-col">
+              <div className="max-w-xl mx-auto w-full p-4 sm:p-5 space-y-3.5 flex-1 flex flex-col">
+                {/* Filter Controls Bar */}
+                <div className="bg-white/80 backdrop-blur-md border border-black/5 rounded-[22px] p-4 space-y-3 shadow-xs shrink-0">
+                  {/* Search Bar */}
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[#1B1B19]/40" />
+                    <input
+                      type="text"
+                      value={settlementSearch}
+                      onChange={(e) => setSettlementSearch(e.target.value)}
+                      placeholder="Search by member name, method, or amount..."
+                      className="w-full bg-white border border-black/10 pl-9 pr-8 py-2 rounded-xl text-xs text-[#1B1B19] focus:outline-none focus:ring-2 focus:ring-[#4A6CF7]/20 placeholder:text-[#1B1B19]/40"
+                    />
+                    {settlementSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setSettlementSearch('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#1B1B19]/40 hover:text-[#1B1B19]"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Who Paid Who Filter Dropdowns */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px] font-mono font-semibold text-[#1B1B19]/60 uppercase tracking-wider">
+                      <span className="flex items-center gap-1">
+                        <SlidersHorizontal className="w-3 h-3" />
+                        Filter Who Paid Who
+                      </span>
+                      {(settlementFilterPayer !== 'all' || settlementFilterReceiver !== 'all' || settlementSearch) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSettlementFilterPayer('all');
+                            setSettlementFilterReceiver('all');
+                            setSettlementSearch('');
+                          }}
+                          className="text-[#4A6CF7] hover:underline normal-case font-bold"
+                        >
+                          Reset filters
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {/* Payer (Sender) Filter */}
+                      <div className="bg-white border border-black/10 rounded-xl p-2 flex items-center justify-between gap-2 shadow-2xs">
+                        <span className="text-[11px] font-mono text-[#1B1B19]/60 font-medium shrink-0">Paid by:</span>
+                        <select
+                          value={settlementFilterPayer}
+                          onChange={(e) => setSettlementFilterPayer(e.target.value)}
+                          className="bg-transparent text-xs font-semibold text-[#1B1B19] focus:outline-none cursor-pointer text-right flex-1 truncate"
+                        >
+                          <option value="all">Anyone (All Payers)</option>
+                          {availableUsers.map((u) => (
+                            <option key={u} value={u}>
+                              {u} {u === activeUser ? '(You)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Receiver Filter */}
+                      <div className="bg-white border border-black/10 rounded-xl p-2 flex items-center justify-between gap-2 shadow-2xs">
+                        <span className="text-[11px] font-mono text-[#1B1B19]/60 font-medium shrink-0">Paid to:</span>
+                        <select
+                          value={settlementFilterReceiver}
+                          onChange={(e) => setSettlementFilterReceiver(e.target.value)}
+                          className="bg-transparent text-xs font-semibold text-[#1B1B19] focus:outline-none cursor-pointer text-right flex-1 truncate"
+                        >
+                          <option value="all">Anyone (All Receivers)</option>
+                          {availableUsers.map((u) => (
+                            <option key={u} value={u}>
+                              {u} {u === activeUser ? '(You)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Filter Summary Tags */}
+                    {(settlementFilterPayer !== 'all' || settlementFilterReceiver !== 'all') && (
+                      <div className="pt-1 flex items-center gap-1.5 flex-wrap text-[11px] font-mono">
+                        <span className="text-[#1B1B19]/60">Active Filter:</span>
+                        <span className="bg-[#1B1B19] text-white px-2 py-0.5 rounded-md font-bold">
+                          {settlementFilterPayer !== 'all' ? settlementFilterPayer : 'Anyone'}
+                          {' → '}
+                          {settlementFilterReceiver !== 'all' ? settlementFilterReceiver : 'Anyone'}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* List Content */}
+                <div className="flex-1 space-y-2">
+                  {filteredSettlements.length === 0 ? (
+                    <div className="py-16 text-center space-y-2 bg-white/50 border border-black/5 rounded-[22px] p-6">
+                      <div className="w-12 h-12 rounded-2xl bg-black/5 mx-auto flex items-center justify-center text-[#1B1B19]/40">
+                        <History className="w-6 h-6" />
+                      </div>
+                      <p className="text-sm font-semibold text-[#1B1B19]">No settlements match your filter</p>
+                      <p className="text-xs text-[#1B1B19]/50 font-mono max-w-xs mx-auto">
+                        Try selecting different payer/receiver combinations or clearing your search term.
+                      </p>
+                      {(settlementFilterPayer !== 'all' || settlementFilterReceiver !== 'all' || settlementSearch) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSettlementFilterPayer('all');
+                            setSettlementFilterReceiver('all');
+                            setSettlementSearch('');
+                          }}
+                          className="mt-2 text-xs font-mono font-bold text-[#4A6CF7] hover:underline cursor-pointer"
+                        >
+                          Clear all filters
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {filteredSettlements.map((s, idx) => (
+                        <div
+                          key={s.id || idx}
+                          className="bg-white border border-black/10 hover:border-black/20 rounded-2xl p-3.5 flex items-center justify-between gap-3 shadow-2xs transition"
+                        >
+                          <div className="min-w-0 space-y-1">
+                            <div className="flex items-center gap-1.5 flex-wrap text-sm">
+                              <span className="font-bold text-[#1B1B19]">{s.payer}</span>
+                              <span className="text-[11px] font-mono text-[#1B1B19]/40 px-1">paid</span>
+                              <span className="font-bold text-emerald-700">{s.receiver}</span>
+                            </div>
+
+                            <div className="flex items-center gap-2 text-[11px] text-[#1B1B19]/50 font-mono">
+                              {s.method && (
+                                <span className="bg-black/5 px-2 py-0.5 rounded text-[#1B1B19]/70 font-semibold">
+                                  {s.method}
+                                </span>
+                              )}
+                              <span>{new Date(s.timestamp).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+                            </div>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            <span className="text-base font-extrabold font-mono text-[#1B1B19]">
+                              {s.currency || '₱'}{formatAmount(Number(s.amount))}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Sticky Full Page Footer */}
+            <div className="bg-[#F8F7F4]/95 backdrop-blur-md border-t border-black/10 p-3.5 sm:p-4 shrink-0 z-20">
+              <div className="max-w-xl mx-auto flex items-center justify-between gap-4">
+                <div>
+                  <span className="text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/50 block">Filtered Total</span>
+                  <span className="text-sm font-bold font-mono text-[#1B1B19]">
+                    {currency}{formatAmount(totalFilteredSettled)}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAllSettlementsModal(false)}
+                  className="bg-[#18181B] hover:bg-black text-white px-7 py-3 rounded-full text-xs font-semibold shadow-sm transition active:scale-[0.98] cursor-pointer"
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
     </div>
   );
