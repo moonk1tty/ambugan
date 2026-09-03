@@ -312,8 +312,25 @@ export default function App() {
           return normalizeChatId(a) === normalizeChatId(b);
         };
 
+        const isValidExpenseDate = (e: Expense) => {
+          if (!e) return false;
+          if (Number(e.amount) >= 1000000) return false;
+          if (e.timestamp) {
+            try {
+              const d = new Date(e.timestamp);
+              if (!isNaN(d.getTime())) {
+                const cutoff = new Date('2026-08-25T00:00:00');
+                if (d.getTime() < cutoff.getTime()) return false;
+              }
+            } catch (err) {}
+          }
+          return true;
+        };
+
         const fetchedExpenses = Array.isArray(result.data.expenses) 
-          ? result.data.expenses.filter((e: Expense) => !currentChatId || isMatchingChatId(e.chatId, currentChatId))
+          ? result.data.expenses
+              .filter((e: Expense) => !currentChatId || isMatchingChatId(e.chatId, currentChatId))
+              .filter(isValidExpenseDate)
           : [];
         const fetchedSettlements = Array.isArray(result.data.settlements) 
           ? result.data.settlements.filter((s: Settlement) => !currentChatId || isMatchingChatId(s.chatId, currentChatId))
@@ -428,7 +445,18 @@ export default function App() {
       const keyExpenses = `${STORAGE_KEYS.EXPENSES}_${currentChatId}`;
       const savedExp = localStorage.getItem(keyExpenses);
       if (savedExp) {
-        try { setExpenses(JSON.parse(savedExp)); } catch (e) { setExpenses([]); }
+        try {
+          const parsed = JSON.parse(savedExp);
+          const filtered = Array.isArray(parsed) ? parsed.filter((e: Expense) => {
+            if (!e || Number(e.amount) >= 1000000) return false;
+            if (e.timestamp) {
+              const d = new Date(e.timestamp);
+              if (!isNaN(d.getTime()) && d.getTime() < new Date('2026-08-25T00:00:00').getTime()) return false;
+            }
+            return true;
+          }) : [];
+          setExpenses(filtered);
+        } catch (e) { setExpenses([]); }
       } else {
         setExpenses([]);
       }
