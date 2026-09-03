@@ -662,7 +662,22 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         });
       };
 
-      const currExpenses = expenses.filter(e => (e.currency || '₱') === curr);
+      const isValidExpense = (e: Expense) => {
+        if (!e) return false;
+        if (Number(e.amount) >= 1000000) return false;
+        if (e.timestamp) {
+          try {
+            const d = new Date(e.timestamp);
+            if (!isNaN(d.getTime())) {
+              const cutoff = new Date('2026-08-25T00:00:00');
+              if (d.getTime() < cutoff.getTime()) return false;
+            }
+          } catch (err) {}
+        }
+        return true;
+      };
+
+      const currExpenses = expenses.filter(e => (e.currency || '₱') === curr).filter(isValidExpense);
       const currSettlements = settlements.filter(s => (s.currency || '₱') === curr);
 
       currExpenses.forEach(e => {
