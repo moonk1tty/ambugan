@@ -415,11 +415,43 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
     memberBreakdowns[m].totalOwed = Math.max(0, memberBreakdowns[m].itemShare + extraShare);
   });
 
-  // Final shares map for ledger
+  // Final shares map for ledger with exact-cent precision
   const computedShares: Record<string, number> = {};
-  members.forEach(m => {
-    computedShares[m] = Number((memberBreakdowns[m]?.totalOwed || 0).toFixed(2));
-  });
+  const grandTotalCents = Math.round(grandTotal * 100);
+  let allocatedCents = 0;
+  const activeList = members.filter(m => (memberBreakdowns[m]?.totalOwed || 0) > 0);
+
+  if (activeList.length > 0) {
+    let highestMember = activeList[0];
+    let highestAmt = -1;
+
+    activeList.forEach(m => {
+      const rawVal = memberBreakdowns[m]?.totalOwed || 0;
+      const cents = Math.round(rawVal * 100);
+      computedShares[m] = cents / 100;
+      allocatedCents += cents;
+      if (cents > highestAmt) {
+        highestAmt = cents;
+        highestMember = m;
+      }
+    });
+
+    // Zero out non-participating members
+    members.forEach(m => {
+      if (computedShares[m] === undefined) computedShares[m] = 0;
+    });
+
+    // Adjust any rounding cent difference to the highest contributor so sum(shares) === grandTotal
+    const diffCents = grandTotalCents - allocatedCents;
+    if (diffCents !== 0 && highestMember) {
+      const adjustedCents = Math.round(computedShares[highestMember] * 100) + diffCents;
+      computedShares[highestMember] = Math.max(0, adjustedCents) / 100;
+    }
+  } else {
+    members.forEach(m => {
+      computedShares[m] = 0;
+    });
+  }
 
   // Save to Ledger
   const handleSave = async () => {
