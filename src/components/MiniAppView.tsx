@@ -383,25 +383,52 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     });
   }
 
-  // Fall back to expenses and settlements only if registeredUsers is empty
-  if (!registeredUsers || registeredUsers.length === 0) {
-    expenses.forEach(e => {
-      if (e.paidBy && !e.paidBy.toLowerCase().includes('bot') && e.paidBy !== 'Alex' && e.paidBy !== 'Sam' && !removedLower.has(e.paidBy.toLowerCase().replace(/^@/, ''))) {
-        userSet.add(e.paidBy.trim());
-      }
-      if (e.createdBy && !e.createdBy.toLowerCase().includes('bot') && e.createdBy !== 'Alex' && e.createdBy !== 'Sam' && !removedLower.has(e.createdBy.toLowerCase().replace(/^@/, ''))) {
-        userSet.add(e.createdBy.trim());
-      }
-    });
-    settlements.forEach(s => {
-      if (s.payer && !s.payer.toLowerCase().includes('bot') && s.payer !== 'Alex' && s.payer !== 'Sam' && !removedLower.has(s.payer.toLowerCase().replace(/^@/, ''))) {
-        userSet.add(s.payer.trim());
-      }
-      if (s.receiver && !s.receiver.toLowerCase().includes('bot') && s.receiver !== 'Alex' && s.receiver !== 'Sam' && !removedLower.has(s.receiver.toLowerCase().replace(/^@/, ''))) {
-        userSet.add(s.receiver.trim());
+  // 1. Registered Telegram members from database
+  if (registeredUsers && registeredUsers.length > 0) {
+    registeredUsers.forEach(u => {
+      const name = (u.firstName || u.name || u.username || '').trim();
+      const cleanLower = name.toLowerCase().replace(/^@/, '');
+      if (name && !name.toLowerCase().includes('bot') && name !== 'Alex' && name !== 'Sam' && !removedLower.has(cleanLower)) {
+        userSet.add(name.trim());
       }
     });
   }
+
+  // 2. Always harvest all active participants from expenses & settlements
+  expenses.forEach(e => {
+    if (e.paidBy && !e.paidBy.toLowerCase().includes('bot') && e.paidBy !== 'Alex' && e.paidBy !== 'Sam' && !removedLower.has(e.paidBy.toLowerCase().replace(/^@/, ''))) {
+      userSet.add(e.paidBy.trim());
+    }
+    if (e.createdBy && !e.createdBy.toLowerCase().includes('bot') && e.createdBy !== 'Alex' && e.createdBy !== 'Sam' && !removedLower.has(e.createdBy.toLowerCase().replace(/^@/, ''))) {
+      userSet.add(e.createdBy.trim());
+    }
+    if (e.singleOwer && !e.singleOwer.toLowerCase().includes('bot') && !removedLower.has(e.singleOwer.toLowerCase().replace(/^@/, ''))) {
+      userSet.add(e.singleOwer.trim());
+    }
+    if (e.splitMembers && Array.isArray(e.splitMembers)) {
+      e.splitMembers.forEach(sm => {
+        if (sm && !sm.toLowerCase().includes('bot') && !removedLower.has(sm.toLowerCase().replace(/^@/, ''))) {
+          userSet.add(sm.trim());
+        }
+      });
+    }
+    if (e.shares && typeof e.shares === 'object') {
+      Object.keys(e.shares).forEach(sh => {
+        if (sh && !sh.toLowerCase().includes('bot') && !removedLower.has(sh.toLowerCase().replace(/^@/, ''))) {
+          userSet.add(sh.trim());
+        }
+      });
+    }
+  });
+
+  settlements.forEach(s => {
+    if (s.payer && !s.payer.toLowerCase().includes('bot') && s.payer !== 'Alex' && s.payer !== 'Sam' && !removedLower.has(s.payer.toLowerCase().replace(/^@/, ''))) {
+      userSet.add(s.payer.trim());
+    }
+    if (s.receiver && !s.receiver.toLowerCase().includes('bot') && s.receiver !== 'Alex' && s.receiver !== 'Sam' && !removedLower.has(s.receiver.toLowerCase().replace(/^@/, ''))) {
+      userSet.add(s.receiver.trim());
+    }
+  });
 
   if (activeUser && !activeUser.toLowerCase().includes('bot') && activeUser !== 'Alex' && activeUser !== 'Sam' && !removedLower.has(activeUser.toLowerCase().replace(/^@/, ''))) {
     userSet.add(activeUser.trim());
@@ -551,7 +578,38 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     setPercentShares(updated);
   };
 
-  // Calculate Net Balances grouped by Currency dynamically across all members
+  const normalizeMemberName = (input: string | undefined | null): string => {
+    if (!input) return availableUsers[0] || 'Member';
+    const clean = String(input).trim();
+    const cleanNoAt = clean.replace(/^@/, '').toLowerCase();
+
+    // 1. Direct exact match in availableUsers
+    const exact = availableUsers.find(u => u === clean);
+    if (exact) return exact;
+
+    // 2. Case-insensitive match or match without @
+    const matchNoAt = availableUsers.find(u => u.replace(/^@/, '').toLowerCase() === cleanNoAt);
+    if (matchNoAt) return matchNoAt;
+
+    // 3. Match from registeredUsers
+    if (registeredUsers && registeredUsers.length > 0) {
+      const reg = registeredUsers.find(r => 
+        (r.firstName && r.firstName.toLowerCase() === cleanNoAt) ||
+        (r.username && r.username.replace(/^@/, '').toLowerCase() === cleanNoAt) ||
+        (r.name && r.name.toLowerCase() === cleanNoAt)
+      );
+      if (reg) {
+        const regName = reg.name || reg.firstName || reg.username;
+        const inPool = availableUsers.find(u => u.toLowerCase() === regName.toLowerCase() || u.replace(/^@/, '').toLowerCase() === regName.replace(/^@/, '').toLowerCase());
+        if (inPool) return inPool;
+        return regName;
+      }
+    }
+
+    return clean;
+  };
+
+  // Calculate Net Balances grouped by Currency dynamically across all members with exact integer-cent precision
   const calculateCurrencyBalances = () => {
     const currencySet = new Set<string>();
     expenses.forEach(e => currencySet.add(e.currency || '₱'));
@@ -566,93 +624,235 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       summaryText: string;
     }> = [];
 
+    const memberSummariesByCurrency: Record<string, Array<{
+      name: string;
+      paid: number;
+      share: number;
+      net: number;
+      status: 'creditor' | 'debtor' | 'settled';
+    }>> = {};
+
     currencySet.forEach(curr => {
-      const userNetMap: Record<string, number> = {};
-      availableUsers.forEach(u => { userNetMap[u] = 0; });
+      const paidCentsMap: Record<string, number> = {};
+      const shareCentsMap: Record<string, number> = {};
+      const userNetCents: Record<string, number> = {};
 
-      expenses.filter(e => (e.currency || '₱') === curr).forEach(e => {
-        const amt = Number(e.amount) || 0;
-        const payer = e.paidBy || availableUsers[0];
-        if (userNetMap[payer] === undefined) userNetMap[payer] = 0;
+      availableUsers.forEach(u => {
+        paidCentsMap[u] = 0;
+        shareCentsMap[u] = 0;
+        userNetCents[u] = 0;
+      });
 
-        userNetMap[payer] += amt;
+      const currExpenses = expenses.filter(e => (e.currency || '₱') === curr);
+      const currSettlements = settlements.filter(s => (s.currency || '₱') === curr);
 
-        if (e.splitMode === 'Equal' || e.splitMode === '50/50 Equal' || !e.splitMode) {
-          const participants = (e.splitMembers && Array.isArray(e.splitMembers) && e.splitMembers.length > 0)
-            ? e.splitMembers.filter(u => availableUsers.includes(u) || u === payer)
+      currExpenses.forEach(e => {
+        const totalCents = Math.round((Number(e.amount) || 0) * 100);
+        if (totalCents <= 0) return;
+
+        const payer = normalizeMemberName(e.paidBy);
+        if (userNetCents[payer] === undefined) {
+          paidCentsMap[payer] = 0;
+          shareCentsMap[payer] = 0;
+          userNetCents[payer] = 0;
+        }
+        paidCentsMap[payer] += totalCents;
+        userNetCents[payer] += totalCents;
+
+        const splitMode = e.splitMode || 'Equal';
+
+        if (splitMode === 'Equal' || splitMode === '50/50 Equal') {
+          const rawParticipants = (e.splitMembers && Array.isArray(e.splitMembers) && e.splitMembers.length > 0)
+            ? e.splitMembers.map(m => normalizeMemberName(m))
             : availableUsers;
+          const participants: string[] = Array.from(new Set(rawParticipants.filter(Boolean) as string[]));
           const numMembers = Math.max(participants.length, 1);
-          const sharePerMember = amt / numMembers;
-          participants.forEach(u => {
-            if (userNetMap[u] === undefined) userNetMap[u] = 0;
-            userNetMap[u] -= sharePerMember;
+          const baseCents = Math.floor(totalCents / numMembers);
+          const remCents = totalCents % numMembers;
+
+          participants.forEach((u, idx) => {
+            const share = baseCents + (idx < remCents ? 1 : 0);
+            if (userNetCents[u] === undefined) {
+              paidCentsMap[u] = 0;
+              shareCentsMap[u] = 0;
+              userNetCents[u] = 0;
+            }
+            shareCentsMap[u] += share;
+            userNetCents[u] -= share;
           });
-        } else if (e.splitMode === 'Exact Amounts') {
+        } else if (splitMode === 'Exact Amounts') {
           if (e.shares && Object.keys(e.shares).length > 0) {
-            Object.entries(e.shares).forEach(([u, share]) => {
-              if (userNetMap[u] === undefined) userNetMap[u] = 0;
-              userNetMap[u] -= Number(share) || 0;
+            const userSharesInCents: Record<string, number> = {};
+            let allocatedCents = 0;
+            let highestUser = '';
+            let highestAmt = -1;
+
+            Object.entries(e.shares).forEach(([rawUser, shareVal]) => {
+              const u = normalizeMemberName(rawUser);
+              const c = Math.round((Number(shareVal) || 0) * 100);
+              userSharesInCents[u] = (userSharesInCents[u] || 0) + c;
+              allocatedCents += c;
+              if (c > highestAmt) {
+                highestAmt = c;
+                highestUser = u;
+              }
+            });
+
+            // Rebalance any rounding discrepancy to highest user
+            const diff = totalCents - allocatedCents;
+            if (diff !== 0 && highestUser) {
+              userSharesInCents[highestUser] += diff;
+            }
+
+            Object.entries(userSharesInCents).forEach(([u, share]) => {
+              if (userNetCents[u] === undefined) {
+                paidCentsMap[u] = 0;
+                shareCentsMap[u] = 0;
+                userNetCents[u] = 0;
+              }
+              shareCentsMap[u] += share;
+              userNetCents[u] -= share;
             });
           } else {
             const userA = payer;
-            const userB = availableUsers.find(u => u !== payer) || availableUsers[1];
-            const shareA = Number(e.userAShare) || (amt / 2);
-            const shareB = Number(e.userBShare) || (amt / 2);
-            userNetMap[userA] -= shareA;
-            if (userB) {
-              if (userNetMap[userB] === undefined) userNetMap[userB] = 0;
-              userNetMap[userB] -= shareB;
-            }
+            const otherCandidate = e.createdBy && normalizeMemberName(e.createdBy) !== payer
+              ? normalizeMemberName(e.createdBy)
+              : availableUsers.find(u => u !== payer) || availableUsers[1] || payer;
+            const userB = normalizeMemberName(otherCandidate);
+
+            const shareACents = e.userAShare !== undefined
+              ? Math.round(Number(e.userAShare) * 100)
+              : Math.floor(totalCents / 2);
+            const shareBCents = totalCents - shareACents;
+
+            [ { u: userA, s: shareACents }, { u: userB, s: shareBCents } ].forEach(({ u, s }) => {
+              if (userNetCents[u] === undefined) {
+                paidCentsMap[u] = 0;
+                shareCentsMap[u] = 0;
+                userNetCents[u] = 0;
+              }
+              shareCentsMap[u] += s;
+              userNetCents[u] -= s;
+            });
           }
-        } else if (e.splitMode === 'Percentages') {
+        } else if (splitMode === 'Percentages') {
           if (e.percentages && Object.keys(e.percentages).length > 0) {
-            Object.entries(e.percentages).forEach(([u, pct]) => {
-              if (userNetMap[u] === undefined) userNetMap[u] = 0;
-              userNetMap[u] -= amt * ((Number(pct) || 0) / 100);
+            const userPctCents: Record<string, number> = {};
+            let allocatedCents = 0;
+            let highestUser = '';
+            let highestPct = -1;
+
+            Object.entries(e.percentages).forEach(([rawUser, pctVal]) => {
+              const u = normalizeMemberName(rawUser);
+              const pct = Number(pctVal) || 0;
+              const c = Math.round(totalCents * (pct / 100));
+              userPctCents[u] = (userPctCents[u] || 0) + c;
+              allocatedCents += c;
+              if (pct > highestPct) {
+                highestPct = pct;
+                highestUser = u;
+              }
+            });
+
+            const diff = totalCents - allocatedCents;
+            if (diff !== 0 && highestUser) {
+              userPctCents[highestUser] += diff;
+            }
+
+            Object.entries(userPctCents).forEach(([u, share]) => {
+              if (userNetCents[u] === undefined) {
+                paidCentsMap[u] = 0;
+                shareCentsMap[u] = 0;
+                userNetCents[u] = 0;
+              }
+              shareCentsMap[u] += share;
+              userNetCents[u] -= share;
             });
           } else {
             const userA = payer;
-            const userB = availableUsers.find(u => u !== payer) || availableUsers[1];
+            const otherCandidate = e.createdBy && normalizeMemberName(e.createdBy) !== payer
+              ? normalizeMemberName(e.createdBy)
+              : availableUsers.find(u => u !== payer) || availableUsers[1] || payer;
+            const userB = normalizeMemberName(otherCandidate);
+
             const pA = (Number(e.userAPercent) || 50) / 100;
-            const pB = (Number(e.userBPercent) || 50) / 100;
-            userNetMap[userA] -= amt * pA;
-            if (userB) {
-              if (userNetMap[userB] === undefined) userNetMap[userB] = 0;
-              userNetMap[userB] -= amt * pB;
-            }
+            const shareACents = Math.round(totalCents * pA);
+            const shareBCents = totalCents - shareACents;
+
+            [ { u: userA, s: shareACents }, { u: userB, s: shareBCents } ].forEach(({ u, s }) => {
+              if (userNetCents[u] === undefined) {
+                paidCentsMap[u] = 0;
+                shareCentsMap[u] = 0;
+                userNetCents[u] = 0;
+              }
+              shareCentsMap[u] += s;
+              userNetCents[u] -= s;
+            });
           }
-        } else if (e.splitMode === 'Single Payer (100% owed)') {
-          const debtor = e.singleOwer || availableUsers.find(u => u !== payer) || availableUsers[1];
-          if (debtor) {
-            if (userNetMap[debtor] === undefined) userNetMap[debtor] = 0;
-            userNetMap[debtor] -= amt;
+        } else if (splitMode === 'Single Payer (100% owed)') {
+          const targetOwer = e.singleOwer || (availableUsers.find(u => u !== payer) || availableUsers[0]);
+          const debtor = normalizeMemberName(targetOwer);
+          if (userNetCents[debtor] === undefined) {
+            paidCentsMap[debtor] = 0;
+            shareCentsMap[debtor] = 0;
+            userNetCents[debtor] = 0;
           }
+          shareCentsMap[debtor] += totalCents;
+          userNetCents[debtor] -= totalCents;
         }
       });
 
-      settlements.filter(s => (s.currency || '₱') === curr).forEach(s => {
-        const amt = Number(s.amount) || 0;
-        if (s.payer) {
-          if (userNetMap[s.payer] === undefined) userNetMap[s.payer] = 0;
-          userNetMap[s.payer] += amt;
+      currSettlements.forEach(s => {
+        const settleCents = Math.round((Number(s.amount) || 0) * 100);
+        if (settleCents <= 0) return;
+        const payer = normalizeMemberName(s.payer);
+        const receiver = normalizeMemberName(s.receiver);
+
+        if (userNetCents[payer] === undefined) {
+          paidCentsMap[payer] = 0;
+          shareCentsMap[payer] = 0;
+          userNetCents[payer] = 0;
         }
-        if (s.receiver) {
-          if (userNetMap[s.receiver] === undefined) userNetMap[s.receiver] = 0;
-          userNetMap[s.receiver] -= amt;
+        if (userNetCents[receiver] === undefined) {
+          paidCentsMap[receiver] = 0;
+          shareCentsMap[receiver] = 0;
+          userNetCents[receiver] = 0;
+        }
+
+        userNetCents[payer] += settleCents;
+        userNetCents[receiver] -= settleCents;
+      });
+
+      // Compute Member Summaries
+      const summaries = Object.keys(userNetCents).map(name => {
+        const net = (userNetCents[name] || 0) / 100;
+        const paid = (paidCentsMap[name] || 0) / 100;
+        const share = (shareCentsMap[name] || 0) / 100;
+        return {
+          name,
+          paid,
+          share,
+          net,
+          status: net >= 0.005 ? ('creditor' as const) : net <= -0.005 ? ('debtor' as const) : ('settled' as const)
+        };
+      });
+      summaries.sort((a, b) => b.net - a.net);
+      memberSummariesByCurrency[curr] = summaries;
+
+      // Min-cash-flow greedy debtor/creditor matching in integer cents
+      const debtors: Array<{ name: string; cents: number }> = [];
+      const creditors: Array<{ name: string; cents: number }> = [];
+
+      Object.entries(userNetCents).forEach(([name, netCents]) => {
+        if (netCents > 0) {
+          creditors.push({ name, cents: netCents });
+        } else if (netCents < 0) {
+          debtors.push({ name, cents: Math.abs(netCents) });
         }
       });
 
-      const debtors: Array<{ name: string; bal: number }> = [];
-      const creditors: Array<{ name: string; bal: number }> = [];
-
-      Object.entries(userNetMap).forEach(([name, net]) => {
-        const roundedNet = Math.round(net * 100) / 100;
-        if (roundedNet >= 0.01) creditors.push({ name, bal: roundedNet });
-        else if (roundedNet <= -0.01) debtors.push({ name, bal: Math.abs(roundedNet) });
-      });
-
-      debtors.sort((a, b) => b.bal - a.bal);
-      creditors.sort((a, b) => b.bal - a.bal);
+      debtors.sort((a, b) => b.cents - a.cents);
+      creditors.sort((a, b) => b.cents - a.cents);
 
       let dIdx = 0;
       let cIdx = 0;
@@ -660,30 +860,33 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       while (dIdx < debtors.length && cIdx < creditors.length) {
         const deb = debtors[dIdx];
         const cred = creditors[cIdx];
-        let oweAmt = Math.min(deb.bal, cred.bal);
-        oweAmt = Math.round(oweAmt * 100) / 100;
+        const settleCents = Math.min(deb.cents, cred.cents);
 
-        if (oweAmt >= 0.01) {
+        if (settleCents > 0) {
+          const amountVal = settleCents / 100;
           results.push({
             currency: curr,
             debtor: deb.name,
             creditor: cred.name,
-            amount: oweAmt,
+            amount: amountVal,
             summaryText: `${deb.name} owes ${cred.name}`
           });
-          deb.bal = Math.round((deb.bal - oweAmt) * 100) / 100;
-          cred.bal = Math.round((cred.bal - oweAmt) * 100) / 100;
+          deb.cents -= settleCents;
+          cred.cents -= settleCents;
         }
 
-        if (deb.bal < 0.01) dIdx++;
-        if (cred.bal < 0.01) cIdx++;
+        if (deb.cents === 0) dIdx++;
+        if (cred.cents === 0) cIdx++;
       }
     });
 
-    return results;
+    return {
+      settlementTransfers: results,
+      memberSummaries: memberSummariesByCurrency
+    };
   };
 
-  const currencyBalances = calculateCurrencyBalances();
+  const { settlementTransfers: currencyBalances, memberSummaries } = calculateCurrencyBalances();
   const activeBalances = currencyBalances.filter(cb => cb.amount >= 0.01);
 
   const handleSingleSubmit = async (e: React.FormEvent) => {
@@ -771,11 +974,12 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
   };
 
   // Calculate active user's personal balances (who owes me, who I owe)
+  const activeUserNorm = normalizeMemberName(activeUser);
   const myDebts = activeBalances.filter(
-    b => b.debtor.toLowerCase() === activeUser.toLowerCase()
+    b => normalizeMemberName(b.debtor) === activeUserNorm
   );
   const myCredits = activeBalances.filter(
-    b => b.creditor.toLowerCase() === activeUser.toLowerCase()
+    b => normalizeMemberName(b.creditor) === activeUserNorm
   );
 
   const totalOwedByMe = myDebts.reduce((sum, b) => sum + b.amount, 0);
@@ -1903,7 +2107,83 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
               )}
             </div>
 
-            {/* 2. Recent Settlements (Display up to 5 with View All button) */}
+            {/* 2. Group Member Net Balances Breakdown (Who Paid What & Net Positions) */}
+            <div className="bg-white/70 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-sm space-y-3">
+              <div className="flex items-center justify-between border-b border-black/5 pb-2">
+                <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold">
+                  Member Net Balances
+                </div>
+                <span className="text-[10px] font-mono text-[#1B1B19]/40">
+                  {Object.keys(memberSummaries).length > 0 ? `${Object.values(memberSummaries)[0]?.length || 0} members` : ''}
+                </span>
+              </div>
+
+              {Object.entries(memberSummaries).map(([curr, summaries]) => (
+                <div key={curr} className="space-y-2">
+                  {summaries.length === 0 ? (
+                    <p className="text-xs text-[#1B1B19]/50 italic text-center py-2">No active balances</p>
+                  ) : (
+                    summaries.map((m, idx) => {
+                      const isMe = normalizeMemberName(m.name) === activeUserNorm;
+                      return (
+                        <div
+                          key={idx}
+                          className={`p-3 rounded-2xl border flex items-center justify-between gap-3 text-xs transition ${
+                            isMe
+                              ? 'bg-amber-50/50 border-amber-200/80 shadow-xs'
+                              : 'bg-white/60 border-black/5'
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-bold text-[#1B1B19]">
+                                {m.name} {isMe && <span className="text-[10px] text-amber-700 font-semibold font-mono">(You)</span>}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-[#1B1B19]/50 font-mono mt-0.5">
+                              Paid {curr}{formatAmount(m.paid)} • Share {curr}{formatAmount(m.share)}
+                            </p>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            {m.status === 'creditor' ? (
+                              <div className="text-right">
+                                <span className="font-bold font-mono text-emerald-600 text-sm">
+                                  +{curr}{formatAmount(m.net)}
+                                </span>
+                                <span className="block text-[9px] font-mono text-emerald-700 font-semibold uppercase">
+                                  gets back
+                                </span>
+                              </div>
+                            ) : m.status === 'debtor' ? (
+                              <div className="text-right">
+                                <span className="font-bold font-mono text-rose-600 text-sm">
+                                  -{curr}{formatAmount(Math.abs(m.net))}
+                                </span>
+                                <span className="block text-[9px] font-mono text-rose-700 font-semibold uppercase">
+                                  owes
+                                </span>
+                              </div>
+                            ) : (
+                              <div className="text-right">
+                                <span className="font-bold font-mono text-gray-500 text-xs">
+                                  {curr}0.00
+                                </span>
+                                <span className="block text-[9px] font-mono text-gray-400 font-semibold uppercase">
+                                  settled
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {/* 3. Recent Settlements (Display up to 5 with View All button) */}
             <div className="bg-white/70 backdrop-blur-md border border-black/5 p-4 rounded-[20px] shadow-sm space-y-2.5">
               <div className="flex items-center justify-between">
                 <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold flex items-center gap-1.5">
