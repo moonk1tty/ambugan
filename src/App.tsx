@@ -123,7 +123,7 @@ function getGroupTitle(cId: string): string {
   return '';
 }
 
-const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbzBu8cufpEzEl9vZHTj4wajJn_Ax5bfFL9hN3yT5xg/exec';
+const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbyzs2hkta9HPE7MDkHgXw6Fk56r9WBaSb_7M9Y3H_cIUfZsDdJJsIpF8dEqTvC4bU5J/exec';
 
 export default function App() {
   const [chatId, setChatId] = useState<string>(() => getChatId());
@@ -172,8 +172,7 @@ export default function App() {
     const activeEnv = getStoredEnvironment();
     const envDefault = ENVIRONMENTS[activeEnv]?.defaultGasUrl || ENVIRONMENTS.main.defaultGasUrl;
     const saved = localStorage.getItem(STORAGE_KEYS.GAS_URL);
-    // Ignore old dead deployment or initialize if empty
-    if (!saved || saved.includes('AKfycbyzs2hkta9HPE7MDkHgXw6Fk56r9WBaSb_7M9Y3H_cIUfZsDdJJsIpF8dEqTvC4bU5J')) {
+    if (!saved || saved.includes('AKfycbzBu8cufpEzEl9vZHTj4wajJn_Ax5bfFL9hN3yT5xg')) {
       return ((import.meta as any).env?.VITE_GAS_URL as string) || envDefault || DEFAULT_GAS_URL;
     }
     return saved;
