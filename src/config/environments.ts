@@ -24,7 +24,7 @@ export const ENVIRONMENTS: Record<AppEnvironment, EnvironmentConfig> = {
     spreadsheetId: '106hKhXEEObyEbWJDxu0dFax-fKUIiDmkO1klpPPSJuM',
     miniAppUrl: 'https://t.me/splitnest_bot/ambugan',
     miniAppShortName: 'ambugan',
-    defaultGasUrl: 'https://script.google.com/macros/s/AKfycbyzs2hkta9HPE7MDkHgXw6Fk56r9WBaSb_7M9Y3H_cIUfZsDdJJsIpF8dEqTvC4bU5J/exec',
+    defaultGasUrl: 'https://script.google.com/macros/s/AKfycbzBu8cufpEzEl9vZHTj4wajJn_Ax5bfFL9hN3yT5xg/exec',
     themeColor: '#10B981',
     description: 'Live production environment connected to @splitnest_bot and official production Google Sheet.'
   },
