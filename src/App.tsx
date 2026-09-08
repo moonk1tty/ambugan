@@ -123,7 +123,7 @@ function getGroupTitle(cId: string): string {
   return '';
 }
 
-const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbyzs2hkta9HPE7MDkHgXw6Fk56r9WBaSb_7M9Y3H_cIUfZsDdJJsIpF8dEqTvC4bU5J/exec';
+const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbzBu8cufpEzEl9vZHTj4wajJn_Ax5bfFL9hN3yT5xg/exec';
 
 export default function App() {
   const [chatId, setChatId] = useState<string>(() => getChatId());
@@ -172,7 +172,8 @@ export default function App() {
     const activeEnv = getStoredEnvironment();
     const envDefault = ENVIRONMENTS[activeEnv]?.defaultGasUrl || ENVIRONMENTS.main.defaultGasUrl;
     const saved = localStorage.getItem(STORAGE_KEYS.GAS_URL);
-    if (!saved || saved.includes('AKfycbzBu8cufpEzEl9vZHTj4wajJn_Ax5bfFL9hN3yT5xg')) {
+    // Ignore old dead deployment or initialize if empty
+    if (!saved || saved.includes('AKfycbyzs2hkta9HPE7MDkHgXw6Fk56r9WBaSb_7M9Y3H_cIUfZsDdJJsIpF8dEqTvC4bU5J')) {
       return ((import.meta as any).env?.VITE_GAS_URL as string) || envDefault || DEFAULT_GAS_URL;
     }
     return saved;
@@ -312,12 +313,12 @@ export default function App() {
           return normalizeChatId(a) === normalizeChatId(b);
         };
 
-        const isValidExpenseDate = (e: Expense) => {
-          if (!e) return false;
-          if (Number(e.amount) >= 1000000) return false;
-          if (e.timestamp) {
+        const isValidRecord = (item: { amount?: number | string; timestamp?: string }) => {
+          if (!item) return false;
+          if (Number(item.amount) >= 1000000) return false;
+          if (item.timestamp) {
             try {
-              const d = new Date(e.timestamp);
+              const d = new Date(item.timestamp);
               if (!isNaN(d.getTime())) {
                 const cutoff = new Date('2026-08-25T00:00:00');
                 if (d.getTime() < cutoff.getTime()) return false;
@@ -330,10 +331,12 @@ export default function App() {
         const fetchedExpenses = Array.isArray(result.data.expenses) 
           ? result.data.expenses
               .filter((e: Expense) => !currentChatId || isMatchingChatId(e.chatId, currentChatId))
-              .filter(isValidExpenseDate)
+              .filter(isValidRecord)
           : [];
         const fetchedSettlements = Array.isArray(result.data.settlements) 
-          ? result.data.settlements.filter((s: Settlement) => !currentChatId || isMatchingChatId(s.chatId, currentChatId))
+          ? result.data.settlements
+              .filter((s: Settlement) => !currentChatId || isMatchingChatId(s.chatId, currentChatId))
+              .filter(isValidRecord)
           : [];
         const fetchedUsers: RegisteredUser[] = Array.isArray(result.data.users) ? [...result.data.users] : [];
 
@@ -464,7 +467,18 @@ export default function App() {
       const keySettlements = `${STORAGE_KEYS.SETTLEMENTS}_${currentChatId}`;
       const savedSet = localStorage.getItem(keySettlements);
       if (savedSet) {
-        try { setSettlements(JSON.parse(savedSet)); } catch (e) { setSettlements([]); }
+        try {
+          const parsed = JSON.parse(savedSet);
+          const filtered = Array.isArray(parsed) ? parsed.filter((s: Settlement) => {
+            if (!s || Number(s.amount) >= 1000000) return false;
+            if (s.timestamp) {
+              const d = new Date(s.timestamp);
+              if (!isNaN(d.getTime()) && d.getTime() < new Date('2026-08-25T00:00:00').getTime()) return false;
+            }
+            return true;
+          }) : [];
+          setSettlements(filtered);
+        } catch (e) { setSettlements([]); }
       } else {
         setSettlements([]);
       }
