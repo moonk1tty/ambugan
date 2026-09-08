@@ -34,6 +34,81 @@ async function startServer() {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
+  // Natural Language Prompt Expense Parser
+  app.post("/api/parse-prompt", async (req, res) => {
+    try {
+      const { prompt, sender, members, currency } = req.body;
+      if (!prompt || typeof prompt !== "string") {
+        return res.status(400).json({ error: "Missing prompt text in request" });
+      }
+
+      const ai = getAi();
+      const memberList = Array.isArray(members) && members.length > 0 ? members.join(", ") : "None specified";
+      const userSender = sender || "User";
+      const defaultCurr = currency || "₱";
+
+      const systemPrompt = `You are an AI assistant for Splitnest, a shared expense and bill splitting app in Telegram.
+A user entered a natural language prompt to log a shared expense.
+Extract the structured expense information accurately.
+
+Group members currently in chat: ${memberList}
+Current active user/sender: ${userSender}
+Default currency: ${defaultCurr}
+
+Analyze user prompt: "${prompt}"
+
+Return a JSON object with this exact schema:
+{
+  "isExpense": true,
+  "description": "Short clean description (e.g. Pizza, Coffee, Grab taxi, Groceries, Dinner at Jollibee)",
+  "amount": 500.00,
+  "currency": "${defaultCurr}",
+  "paidBy": "Name of who paid (if not explicitly stated in prompt, use '${userSender}')",
+  "category": "Food & Drink" | "Groceries" | "Transport" | "Housing" | "Entertainment" | "General",
+  "splitMode": "Equal" | "50/50 Equal" | "Custom",
+  "splitMembers": ["Name1", "Name2"]
+}
+
+Rules:
+1. If the prompt does NOT contain an amount or is not an expense, return { "isExpense": false }.
+2. Match mentioned names or @usernames to the group members list when available.`;
+
+      let parsed: any = null;
+
+      try {
+        const response = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: [{ parts: [{ text: systemPrompt }] }],
+          config: {
+            responseMimeType: "application/json",
+            temperature: 0.1,
+          },
+        });
+        const text = (response.text || "").replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
+        parsed = JSON.parse(text);
+      } catch (e1) {
+        try {
+          const response2 = await ai.models.generateContent({
+            model: "gemini-2.0-flash",
+            contents: [{ parts: [{ text: systemPrompt }] }],
+            config: {
+              responseMimeType: "application/json",
+              temperature: 0.1,
+            },
+          });
+          const text2 = (response2.text || "").replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
+          parsed = JSON.parse(text2);
+        } catch (e2: any) {
+          return res.status(500).json({ error: "Failed to parse prompt with AI", details: e2.message });
+        }
+      }
+
+      return res.json({ success: true, data: parsed });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || "Server error parsing prompt" });
+    }
+  });
+
   // Track backend OCR state & rate limits
   let isBackendOcrDisabled = process.env.ENABLE_OCR === "false" || process.env.DISABLE_OCR === "true";
   let ocrRateLimitResetTime = 0;

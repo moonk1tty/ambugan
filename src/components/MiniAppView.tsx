@@ -1157,7 +1157,8 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     const isReceipt = Boolean(
       exp.isReceiptSplitter || 
       (exp.itemsBreakdown && exp.itemsBreakdown.length > 0) || 
-      (exp.description && exp.description.startsWith('Receipt:'))
+      (exp.description && exp.description.toLowerCase().startsWith('receipt:')) ||
+      (exp.merchant && exp.merchant.trim().length > 0)
     );
 
     if (isReceipt) {
@@ -2785,8 +2786,26 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
           </header>
 
           <form onSubmit={handleSaveEditedExpense} className="flex-1 flex flex-col min-h-0">
-            {/* Scrollable Content */}
+            {/* Switch to Itemized Splitter button */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 max-w-xl mx-auto w-full">
+              <div className="flex items-center justify-between p-3 bg-emerald-50/70 border border-emerald-200/70 rounded-2xl">
+                <div className="flex items-center space-x-2">
+                  <Receipt className="w-4 h-4 text-emerald-700" />
+                  <span className="text-xs font-semibold text-emerald-900">Want to split item by item?</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const currentExp = editingExpense;
+                    setEditingExpense(null);
+                    setEditingReceiptExpense(currentExp);
+                  }}
+                  className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[11px] font-bold transition shadow-xs cursor-pointer"
+                >
+                  Switch to Receipt Splitter
+                </button>
+              </div>
+
               {/* Description Field */}
               <div className="space-y-1">
                 <label className="block text-[10px] font-mono uppercase tracking-wider text-[#1B1B19]/60 font-semibold">
@@ -3449,29 +3468,37 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
           defaultPayer={editingReceiptExpense.paidBy || activeUser}
           defaultCurrency={editingReceiptExpense.currency || '₱'}
           initialReceiptData={{
-            merchant: editingReceiptExpense.merchant || editingReceiptExpense.description.replace(/^Receipt:\s*/, ''),
+            merchant: editingReceiptExpense.merchant || editingReceiptExpense.description.replace(/^Receipt:\s*/i, ''),
             total: Number(editingReceiptExpense.amount) || 0,
             currency: editingReceiptExpense.currency || '₱',
             category: editingReceiptExpense.category || 'Food & Drink',
             tax: Number(editingReceiptExpense.tax) || 0,
             tip: Number(editingReceiptExpense.tip) || 0,
             discount: Number(editingReceiptExpense.discount) || 0,
+            paidBy: editingReceiptExpense.paidBy || activeUser,
             items: (editingReceiptExpense.itemsBreakdown && editingReceiptExpense.itemsBreakdown.length > 0)
               ? editingReceiptExpense.itemsBreakdown.map(it => ({
                   name: it.name,
                   price: Number(it.price) || 0,
                   quantity: Number(it.quantity) || 1,
-                  assignedTo: it.assignedTo || []
+                  assignedTo: (it.assignedTo && it.assignedTo.length > 0) ? it.assignedTo : availableUsers
                 }))
-              : [{
-                  name: editingReceiptExpense.description,
-                  price: Number(editingReceiptExpense.amount) || 0,
-                  quantity: 1,
-                  assignedTo: editingReceiptExpense.splitMembers && editingReceiptExpense.splitMembers.length > 0
-                    ? editingReceiptExpense.splitMembers
-                    : availableUsers
-                }]
-          }}
+              : (editingReceiptExpense.shares && Object.keys(editingReceiptExpense.shares).length > 0)
+                ? Object.entries(editingReceiptExpense.shares).map(([member, shareAmt]) => ({
+                    name: `Share for ${member}`,
+                    price: Number(shareAmt) || 0,
+                    quantity: 1,
+                    assignedTo: [member]
+                  }))
+                : [{
+                    name: editingReceiptExpense.description,
+                    price: Number(editingReceiptExpense.amount) || 0,
+                    quantity: 1,
+                    assignedTo: editingReceiptExpense.splitMembers && editingReceiptExpense.splitMembers.length > 0
+                      ? editingReceiptExpense.splitMembers
+                      : availableUsers
+                  }]
+          } as any}
           onSaveToLedger={handleSaveEditedReceipt}
           gasUrl={gasUrl}
         />

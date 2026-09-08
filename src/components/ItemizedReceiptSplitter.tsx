@@ -126,9 +126,10 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
     }
   };
 
-  // Keep paidBy in sync if default changes
+  const lastInitialDataRef = useRef<string | null>(null);
+
   useEffect(() => {
-    if (defaultPayer && members.includes(defaultPayer)) {
+    if (defaultPayer) {
       setPaidBy(defaultPayer);
     }
   }, [defaultPayer]);
@@ -143,20 +144,27 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
     if (data.merchant) setMerchant(data.merchant);
     if (data.currency) setCurrency(data.currency);
     if (data.category) setCategory(data.category);
+    if ((data as any).paidBy) setPaidBy((data as any).paidBy);
     if (typeof data.tax === 'number') setTax(data.tax);
     if (typeof data.tip === 'number') setTip(data.tip);
     if (typeof data.discount === 'number') setDiscount(data.discount);
 
     if (data.items && data.items.length > 0) {
-      const converted: SplitItem[] = data.items.map((it, idx) => ({
-        id: `ocr-item-${idx}-${Date.now()}`,
-        name: it.name || `Item ${idx + 1}`,
-        price: Number(it.price) || 0,
-        quantity: Number(it.quantity) || 1,
-        assignedMembers: it.assignedTo && it.assignedTo.length > 0 
-          ? it.assignedTo 
-          : (members.length > 0 ? [...members] : ['Kate'])
-      }));
+      const converted: SplitItem[] = data.items.map((it, idx) => {
+        const assigned = (it.assignedTo && it.assignedTo.length > 0)
+          ? it.assignedTo
+          : ((it as any).assignedMembers && (it as any).assignedMembers.length > 0)
+            ? (it as any).assignedMembers
+            : (members.length > 0 ? [...members] : ['Kate']);
+
+        return {
+          id: `ocr-item-${idx}-${Date.now()}`,
+          name: it.name || `Item ${idx + 1}`,
+          price: Number(it.price) || 0,
+          quantity: Number(it.quantity) || 1,
+          assignedMembers: assigned
+        };
+      });
       setItems(converted);
     }
   };
@@ -164,7 +172,11 @@ export const ItemizedReceiptSplitter: React.FC<ItemizedReceiptSplitterProps> = (
   // Load initial receipt if provided
   useEffect(() => {
     if (initialReceiptData) {
-      loadParsedReceipt(initialReceiptData);
+      const serialized = JSON.stringify(initialReceiptData);
+      if (lastInitialDataRef.current !== serialized) {
+        lastInitialDataRef.current = serialized;
+        loadParsedReceipt(initialReceiptData);
+      }
     }
   }, [initialReceiptData]);
 
