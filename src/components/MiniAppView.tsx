@@ -616,7 +616,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
     settlements.forEach(s => currencySet.add(s.currency || '₱'));
     if (currencySet.size === 0) currencySet.add('₱');
 
-    const results: Array<{
+    const allMergedResults: Array<{
       currency: string;
       debtor: string;
       creditor: string;
@@ -628,6 +628,8 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       name: string;
       paid: number;
       share: number;
+      settledPaid: number;
+      settledReceived: number;
       net: number;
       status: 'creditor' | 'debtor' | 'settled';
     }>> = {};
@@ -636,6 +638,8 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       const paidCentsMap: Record<string, number> = {};
       const shareCentsMap: Record<string, number> = {};
       const userNetCents: Record<string, number> = {};
+      const settlePaidCentsMap: Record<string, number> = {};
+      const settleReceivedCentsMap: Record<string, number> = {};
       // Pairwise debt matrix: pairwiseOwedCents[Debtor][Creditor] in integer cents
       const pairwiseOwedCents: Record<string, Record<string, number>> = {};
 
@@ -643,6 +647,8 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         paidCentsMap[u] = 0;
         shareCentsMap[u] = 0;
         userNetCents[u] = 0;
+        settlePaidCentsMap[u] = 0;
+        settleReceivedCentsMap[u] = 0;
         pairwiseOwedCents[u] = {};
         availableUsers.forEach(v => {
           pairwiseOwedCents[u][v] = 0;
@@ -655,6 +661,8 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
           paidCentsMap[name] = 0;
           shareCentsMap[name] = 0;
           userNetCents[name] = 0;
+          settlePaidCentsMap[name] = 0;
+          settleReceivedCentsMap[name] = 0;
         }
         availableUsers.forEach(v => {
           if (pairwiseOwedCents[name][v] === undefined) pairwiseOwedCents[name][v] = 0;
@@ -807,6 +815,9 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         ensureUserInMatrix(payer);
         ensureUserInMatrix(receiver);
 
+        settlePaidCentsMap[payer] = (settlePaidCentsMap[payer] || 0) + settleCents;
+        settleReceivedCentsMap[receiver] = (settleReceivedCentsMap[receiver] || 0) + settleCents;
+
         userNetCents[payer] += settleCents;
         userNetCents[receiver] -= settleCents;
 
@@ -817,7 +828,7 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         }
       });
 
-      // Compute Overall Member Summaries (Paid, Consumed/Share, Net Position)
+      // Compute Overall Member Summaries (Paid, Consumed/Share, Settled, Net Position)
       const allMembersInCurrency = Array.from(new Set([
         ...availableUsers,
         ...Object.keys(userNetCents)
@@ -827,10 +838,14 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
         const net = (userNetCents[name] || 0) / 100;
         const paid = (paidCentsMap[name] || 0) / 100;
         const share = (shareCentsMap[name] || 0) / 100;
+        const settledPaid = (settlePaidCentsMap[name] || 0) / 100;
+        const settledReceived = (settleReceivedCentsMap[name] || 0) / 100;
         return {
           name,
           paid,
           share,
+          settledPaid,
+          settledReceived,
           net,
           status: net >= 0.005 ? ('creditor' as const) : net <= -0.005 ? ('debtor' as const) : ('settled' as const)
         };
@@ -838,45 +853,79 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
       summaries.sort((a, b) => b.net - a.net);
       memberSummariesByCurrency[curr] = summaries;
 
-      // Calculate Exact Bilateral Net Transfers (Direct Pairwise Settlements)
-      const pairProcessed = new Set<string>();
-      for (let i = 0; i < allMembersInCurrency.length; i++) {
-        for (let j = i + 1; j < allMembersInCurrency.length; j++) {
-          const userA = allMembersInCurrency[i];
-          const userB = allMembersInCurrency[j];
-          const pairKey = [userA, userB].sort().join(':::');
-          if (pairProcessed.has(pairKey)) continue;
-          pairProcessed.add(pairKey);
+      // =========================================================================
+      // 1. SIMPLIFIED / MERGED SETTLEMENT ALGORITHM (Minimizes transactions, no pass-around)
+      // =========================================================================
+      const debtorsList: Array<{ name: string; amountCents: number }> = [];
+      const creditorsList: Array<{ name: string; amountCents: number }> = [];
 
-          const owedAB = pairwiseOwedCents[userA]?.[userB] || 0; // A owes B
-          const owedBA = pairwiseOwedCents[userB]?.[userA] || 0; // B owes A
-          const netCents = owedAB - owedBA;
+      allMembersInCurrency.forEach(name => {
+        const c = userNetCents[name] || 0;
+        if (c <= -1) {
+          debtorsList.push({ name, amountCents: -c });
+        } else if (c >= 1) {
+          creditorsList.push({ name, amountCents: c });
+        }
+      });
 
-          if (netCents > 0) {
-            results.push({
+      debtorsList.sort((a, b) => b.amountCents - a.amountCents);
+      creditorsList.sort((a, b) => b.amountCents - a.amountCents);
+
+      // Pass 1: Exact matches first (1:1 offset, eliminates split payments)
+      for (let d = 0; d < debtorsList.length; d++) {
+        if (debtorsList[d].amountCents <= 0) continue;
+        for (let c = 0; c < creditorsList.length; c++) {
+          if (creditorsList[c].amountCents <= 0) continue;
+          if (debtorsList[d].amountCents === creditorsList[c].amountCents) {
+            const amt = debtorsList[d].amountCents;
+            allMergedResults.push({
               currency: curr,
-              debtor: userA,
-              creditor: userB,
-              amount: netCents / 100,
-              summaryText: `${userA} owes ${userB}`
+              debtor: debtorsList[d].name,
+              creditor: creditorsList[c].name,
+              amount: amt / 100,
+              summaryText: `${debtorsList[d].name} owes ${creditorsList[c].name}`
             });
-          } else if (netCents < 0) {
-            results.push({
-              currency: curr,
-              debtor: userB,
-              creditor: userA,
-              amount: Math.abs(netCents) / 100,
-              summaryText: `${userB} owes ${userA}`
-            });
+            debtorsList[d].amountCents = 0;
+            creditorsList[c].amountCents = 0;
+            break;
           }
         }
       }
+
+      // Pass 2: Greedy matching of remaining largest debtor with largest creditor
+      let remDebtors = debtorsList.filter(d => d.amountCents > 0);
+      let remCreditors = creditorsList.filter(c => c.amountCents > 0);
+
+      while (remDebtors.length > 0 && remCreditors.length > 0) {
+        remDebtors.sort((a, b) => b.amountCents - a.amountCents);
+        remCreditors.sort((a, b) => b.amountCents - a.amountCents);
+
+        const topD = remDebtors[0];
+        const topC = remCreditors[0];
+        const settleAmt = Math.min(topD.amountCents, topC.amountCents);
+
+        if (settleAmt >= 1) {
+          allMergedResults.push({
+            currency: curr,
+            debtor: topD.name,
+            creditor: topC.name,
+            amount: settleAmt / 100,
+            summaryText: `${topD.name} owes ${topC.name}`
+          });
+        }
+
+        topD.amountCents -= settleAmt;
+        topC.amountCents -= settleAmt;
+
+        remDebtors = remDebtors.filter(x => x.amountCents > 0);
+        remCreditors = remCreditors.filter(x => x.amountCents > 0);
+      }
     });
 
-    results.sort((a, b) => b.amount - a.amount);
+    allMergedResults.sort((a, b) => b.amount - a.amount);
 
     return {
-      settlementTransfers: results,
+      settlementTransfers: allMergedResults,
       memberSummaries: memberSummariesByCurrency
     };
   };
@@ -2025,11 +2074,12 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
           <div className="space-y-3">
             {/* 1. Member Balance Pairings */}
             <div className="bg-white/70 backdrop-blur-md border border-black/5 rounded-[24px] p-5 shadow-sm space-y-3">
-              <div className="flex items-center justify-between border-b border-black/5 pb-2">
+              <div className="flex items-center justify-between border-b border-black/5 pb-2.5">
                 <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#1B1B19]/60 font-semibold">
                   Member Settlements
                 </div>
-                <span className="text-[10px] font-mono text-[#1B1B19]/40">
+
+                <span className="text-[10px] font-mono text-[#1B1B19]/40 shrink-0">
                   {activeBalances.length} {activeBalances.length === 1 ? 'balance' : 'balances'}
                 </span>
               </div>
@@ -2138,6 +2188,8 @@ export const MiniAppView: React.FC<MiniAppViewProps> = ({
                             </div>
                             <p className="text-[10px] text-[#1B1B19]/50 font-mono mt-0.5">
                               Paid {curr}{formatAmount(m.paid)} • Share {curr}{formatAmount(m.share)}
+                              {m.settledPaid > 0 && ` • Settled ${curr}${formatAmount(m.settledPaid)}`}
+                              {m.settledReceived > 0 && ` • Collected ${curr}${formatAmount(m.settledReceived)}`}
                             </p>
                           </div>
 
