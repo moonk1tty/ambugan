@@ -50,11 +50,13 @@ export const SetupGuide: React.FC = () => {
       step: 4,
       title: 'Bind Telegram Webhook',
       icon: <Globe className="w-5 h-5 text-indigo-400" />,
-      description: 'Connect Telegram messages & photo uploads directly to your script.',
+      description: 'Connect Telegram messages, commands & member welcome events to your script.',
       details: [
-        'In Google Apps Script editor, select the setWebhook function from the function dropdown at the top.',
-        'Click "Run".',
-        'Check the execution log to verify "Set Webhook Response: {"ok":true,...}".'
+        'CRITICAL: Ensure your deployment was set to Execute as: "Me" and Who has access: "Anyone".',
+        'CRITICAL: NEVER use a /dev test URL! Google Apps Script /dev URLs return 401 Unauthorized to Telegram. Always use your deployed URL ending in /exec.',
+        'Paste your deployed Web App URL into PROD_WEBHOOK_URL in Code.gs, or run setWebhook("<YOUR_EXEC_URL>") in Apps Script.',
+        'Alternatively, open in your browser: https://api.telegram.org/bot<TOKEN>/setWebhook?url=<YOUR_EXEC_URL>&drop_pending_updates=true',
+        'Verify the response says {"ok":true,"result":true,"description":"Webhook was set"}.'
       ]
     },
     {
